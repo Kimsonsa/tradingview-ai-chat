@@ -56,7 +56,7 @@ class ChatManager {
     this.updateSendButton();
     const typingEl = this.showTypingIndicator();
 
-    const model = localStorage.getItem('tradeai_model') || 'gpt-4o';
+    const model = localStorage.getItem('tradeai_model') || 'gpt-5.5';
 
     try {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {

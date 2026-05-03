@@ -123,7 +123,7 @@
     const modelInput = document.getElementById('modelInput');
     const saved = localStorage.getItem('tradeai_apikey');
     if (saved) keyInput.value = saved;
-    const savedModel = localStorage.getItem('tradeai_model') || 'gpt-4o';
+    const savedModel = localStorage.getItem('tradeai_model') || 'gpt-5.5';
     modelInput.value = savedModel;
     modal.classList.add('open');
   }
