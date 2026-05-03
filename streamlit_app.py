@@ -1,6 +1,6 @@
 """
 TradeAI — TradingView 차트 + AI 채팅 Streamlit 앱
-바이낸스 BTCUSDT.P 실시간 차트와 GPT AI 분석
+전체화면 차트 + 팝업 설정/채팅
 """
 
 import streamlit as st
@@ -12,13 +12,29 @@ st.set_page_config(
     page_title="TradeAI — 실시간 차트 AI 분석",
     page_icon="◈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-# ─── 커스텀 CSS ───
+# ─── 세션 상태 초기화 ───
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "interval" not in st.session_state:
+    st.session_state.interval = "60"
+if "symbol" not in st.session_state:
+    st.session_state.symbol = "BINANCE:BTCUSDT.P"
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
+if "model" not in st.session_state:
+    st.session_state.model = "gpt-5.5"
+
+INTERVAL_LABELS = {
+    "1": "1분", "5": "5분", "15": "15분",
+    "60": "1시간", "240": "4시간", "D": "1일"
+}
+
+# ─── 전체화면 CSS ───
 st.markdown("""
 <style>
-    /* 전체 배경 & 폰트 */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
     .stApp {
@@ -26,21 +42,144 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
     }
 
-    /* 헤더 숨기기 */
+    /* 사이드바 완전 숨기기 */
+    section[data-testid="stSidebar"] { display: none !important; }
+    button[data-testid="stSidebarCollapsedControl"] { display: none !important; }
+
+    /* 헤더 최소화 */
     header[data-testid="stHeader"] {
-        background: #0d1117;
-        border-bottom: 1px solid rgba(255,255,255,0.06);
+        background: transparent !important;
+        height: 0px !important;
+        min-height: 0px !important;
+        padding: 0 !important;
     }
 
-    /* 사이드바 스타일 */
-    section[data-testid="stSidebar"] {
-        background: #0d1117;
-        border-right: 1px solid rgba(255,255,255,0.06);
+    /* 메인 영역 패딩 제거 */
+    .stMainBlockContainer {
+        padding: 0 !important;
+        max-width: 100% !important;
     }
 
-    section[data-testid="stSidebar"] .stMarkdown p,
-    section[data-testid="stSidebar"] .stMarkdown label {
-        color: #8892a4;
+    .block-container {
+        padding: 0 !important;
+        max-width: 100% !important;
+    }
+
+    section[data-testid="stMain"] {
+        padding: 0 !important;
+    }
+
+    /* iframe (차트) 전체화면 */
+    iframe {
+        width: 100vw !important;
+        height: 100vh !important;
+        border: none !important;
+    }
+
+    /* 하단 Streamlit 브랜딩 숨기기 */
+    footer { display: none !important; }
+    .stDeployButton { display: none !important; }
+
+    /* 플로팅 버튼 스타일 */
+    .floating-buttons {
+        position: fixed;
+        top: 12px;
+        right: 16px;
+        z-index: 99999;
+        display: flex;
+        gap: 8px;
+    }
+
+    .float-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(13, 17, 23, 0.85);
+        backdrop-filter: blur(12px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 18px;
+        color: #e8ecf1;
+        transition: all 0.2s;
+        text-decoration: none;
+    }
+
+    .float-btn:hover {
+        background: rgba(0, 245, 160, 0.15);
+        border-color: rgba(0, 245, 160, 0.4);
+        box-shadow: 0 0 20px rgba(0, 245, 160, 0.1);
+        transform: translateY(-1px);
+    }
+
+    /* 로고 플로팅 */
+    .floating-logo {
+        position: fixed;
+        top: 12px;
+        left: 16px;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        background: rgba(13, 17, 23, 0.85);
+        backdrop-filter: blur(12px);
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .floating-logo .icon {
+        font-size: 18px;
+        background: linear-gradient(135deg, #00f5a0 0%, #00d4ff 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    .floating-logo .text {
+        font-size: 15px;
+        font-weight: 700;
+        color: #e8ecf1;
+    }
+
+    .floating-logo .accent {
+        background: linear-gradient(135deg, #00f5a0 0%, #00d4ff 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    .floating-logo .badge {
+        font-size: 10px;
+        font-weight: 600;
+        color: #00f5a0;
+        padding: 2px 8px;
+        background: rgba(0, 245, 160, 0.1);
+        border-radius: 10px;
+        margin-left: 4px;
+    }
+
+    /* 다이얼로그 스타일 */
+    div[data-testid="stDialog"] > div {
+        background: #0d1117 !important;
+        border: 1px solid rgba(255,255,255,0.08) !important;
+        border-radius: 16px !important;
+    }
+
+    div[data-testid="stDialog"] .stMarkdown p { color: #8892a4; }
+    div[data-testid="stDialog"] .stMarkdown h4 { color: #e8ecf1; }
+    div[data-testid="stDialog"] .stMarkdown strong { color: #00f5a0; }
+
+    div[data-testid="stDialog"] .stTextInput > div > div > input {
+        background: #131a26 !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        color: #e8ecf1 !important;
+    }
+
+    div[data-testid="stDialog"] .stSelectbox > div > div {
+        background: #131a26 !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        color: #e8ecf1 !important;
     }
 
     /* 채팅 메시지 스타일 */
@@ -50,19 +189,8 @@ st.markdown("""
         border-radius: 10px !important;
     }
 
-    /* 채팅 입력 */
-    .stChatInput > div {
-        background: #131a26 !important;
-        border: 1px solid rgba(255,255,255,0.1) !important;
-        border-radius: 10px !important;
-    }
-
-    .stChatInput textarea {
-        color: #e8ecf1 !important;
-    }
-
-    /* 버튼 스타일 */
-    .stButton > button {
+    /* 버튼 */
+    div[data-testid="stDialog"] .stButton > button {
         background: linear-gradient(135deg, #00f5a0 0%, #00d4ff 100%) !important;
         color: #080b12 !important;
         border: none !important;
@@ -70,175 +198,65 @@ st.markdown("""
         border-radius: 8px !important;
     }
 
-    .stButton > button:hover {
-        box-shadow: 0 0 20px rgba(0, 245, 160, 0.15) !important;
-    }
-
-    /* 로고 영역 */
-    .logo-container {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 0 16px 0;
-    }
-
-    .logo-icon {
-        font-size: 24px;
-        background: linear-gradient(135deg, #00f5a0 0%, #00d4ff 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-
-    .logo-text {
-        font-size: 20px;
-        font-weight: 700;
-        color: #e8ecf1;
-    }
-
-    .logo-accent {
-        background: linear-gradient(135deg, #00f5a0 0%, #00d4ff 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-
-    /* 심볼 뱃지 */
-    .symbol-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 12px;
-        background: rgba(0, 245, 160, 0.08);
-        border: 1px solid rgba(0, 245, 160, 0.2);
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-        color: #00f5a0;
-        letter-spacing: 0.5px;
-        margin-bottom: 12px;
-    }
-
-    .badge-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: #00f5a0;
-        display: inline-block;
-        animation: pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
-    }
-
-    /* 타임프레임 버튼 그룹 */
-    .tf-group {
-        display: flex;
-        gap: 4px;
-        padding: 3px;
-        background: #131a26;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.06);
-        margin-bottom: 16px;
-    }
-
-    /* 퀵 액션 버튼 */
-    .quick-btn {
-        display: inline-block;
-        padding: 8px 14px;
-        margin: 4px;
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 8px;
-        background: #131a26;
-        color: #e8ecf1;
-        font-size: 13px;
-        cursor: pointer;
-        text-decoration: none;
-    }
-
-    .quick-btn:hover {
-        border-color: rgba(0, 245, 160, 0.3);
-        background: rgba(0, 245, 160, 0.05);
-    }
-
-    /* 구분선 */
-    hr {
-        border: none;
-        border-top: 1px solid rgba(255,255,255,0.06);
-        margin: 12px 0;
-    }
-
-    /* selectbox 스타일 */
-    .stSelectbox > div > div {
-        background: #131a26 !important;
+    /* Streamlit 기본 버튼 (플로팅용) - 투명하게 */
+    .stMainBlockContainer .stButton > button {
+        position: fixed;
+        z-index: 100000;
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
         border: 1px solid rgba(255,255,255,0.1) !important;
+        background: rgba(13, 17, 23, 0.85) !important;
+        backdrop-filter: blur(12px);
+        font-size: 18px;
         color: #e8ecf1 !important;
+        padding: 0 !important;
+        min-height: 0 !important;
+        line-height: 1 !important;
     }
 
-    /* text_input 스타일 */
-    .stTextInput > div > div > input {
-        background: #131a26 !important;
-        border: 1px solid rgba(255,255,255,0.1) !important;
-        color: #e8ecf1 !important;
+    .stMainBlockContainer .stButton > button:hover {
+        background: rgba(0, 245, 160, 0.15) !important;
+        border-color: rgba(0, 245, 160, 0.4) !important;
+        box-shadow: 0 0 20px rgba(0, 245, 160, 0.1);
+        color: #00f5a0 !important;
     }
 
-    /* 탭 스타일 */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2px;
-        background: #131a26;
-        border-radius: 10px;
-        padding: 3px;
+    /* 설정 버튼 위치 */
+    div[data-testid="stColumn"]:nth-child(1) .stButton > button {
+        top: 12px;
+        right: 68px;
     }
 
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        border-radius: 7px;
-        color: #8892a4;
-        font-weight: 500;
-        padding: 6px 16px;
+    /* 채팅 버튼 위치 */
+    div[data-testid="stColumn"]:nth-child(2) .stButton > button {
+        top: 12px;
+        right: 16px;
     }
 
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #00f5a0 0%, #00d4ff 100%) !important;
-        color: #080b12 !important;
-        font-weight: 600;
-    }
-
-    /* 마크다운 내 강조 */
-    .stMarkdown strong { color: #00f5a0; }
-    .stMarkdown em { color: #00d4ff; }
-
-    /* 경고 배너 */
-    .api-warning {
-        padding: 10px 16px;
-        background: rgba(255, 193, 7, 0.08);
-        border: 1px solid rgba(255, 193, 7, 0.2);
-        border-radius: 8px;
-        color: #ffc107;
-        font-size: 13px;
-        text-align: center;
-        margin-bottom: 12px;
+    /* 컬럼 컨테이너 숨기기 (버튼만 플로팅) */
+    .stMainBlockContainer > div > div > div[data-testid="stHorizontalBlock"] {
+        position: fixed;
+        z-index: 100000;
+        height: 0;
+        overflow: visible;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ─── 세션 상태 초기화 ───
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "interval" not in st.session_state:
-    st.session_state.interval = "60"
-if "symbol" not in st.session_state:
-    st.session_state.symbol = "BINANCE:BTCUSDT.P"
+# ─── 플로팅 로고 ───
+st.markdown(f"""
+<div class="floating-logo">
+    <span class="icon">◈</span>
+    <span class="text">Trade<span class="accent">AI</span></span>
+    <span class="badge">{st.session_state.symbol.replace('BINANCE:', '')}</span>
+</div>
+""", unsafe_allow_html=True)
 
-INTERVAL_LABELS = {
-    "1": "1분", "5": "5분", "15": "15분",
-    "60": "1시간", "240": "4시간", "D": "1일"
-}
-
-# ─── TradingView 차트 HTML 생성 ───
+# ─── TradingView 차트 HTML ───
 def get_chart_html(symbol, interval):
     return f"""
-    <div style="height:100%;width:100%;background:#080b12;">
+    <div style="height:100vh;width:100vw;background:#080b12;overflow:hidden;">
         <div class="tradingview-widget-container" style="height:100%;width:100%">
             <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
             <script type="text/javascript"
@@ -300,170 +318,99 @@ def get_system_prompt(symbol, interval_label):
 ⚠️ 중요: 이것은 투자 조언이 아닌 기술적 분석 의견임을 항상 명시해주세요."""
 
 
-# ─── 사이드바 ───
-with st.sidebar:
-    st.markdown("""
-    <div class="logo-container">
-        <span class="logo-icon">◈</span>
-        <span class="logo-text">Trade<span class="logo-accent">AI</span></span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown(f"""
-    <div class="symbol-badge">
-        <span class="badge-dot"></span>
-        {st.session_state.symbol}
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # API 키 설정
-    st.markdown("##### 🔑 API 설정")
-    api_key = st.text_input(
+# ─── 설정 다이얼로그 ───
+@st.dialog("⚙️ 설정")
+def settings_dialog():
+    st.markdown("#### 🔑 API 설정")
+    new_api_key = st.text_input(
         "OpenAI API 키",
         type="password",
+        value=st.session_state.api_key,
         placeholder="sk-...",
-        help="API 키는 세션 동안만 유지됩니다."
     )
-
-    model = st.selectbox(
+    new_model = st.selectbox(
         "AI 모델",
         ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
-        index=0,
+        index=["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"].index(st.session_state.model),
     )
 
     st.markdown("---")
-
-    # 타임프레임 선택
-    st.markdown("##### ⏱️ 타임프레임")
-    interval = st.selectbox(
+    st.markdown("#### ⏱️ 타임프레임")
+    new_interval = st.selectbox(
         "차트 타임프레임",
         options=list(INTERVAL_LABELS.keys()),
         format_func=lambda x: INTERVAL_LABELS[x],
         index=list(INTERVAL_LABELS.keys()).index(st.session_state.interval),
-        label_visibility="collapsed"
     )
-    if interval != st.session_state.interval:
-        st.session_state.interval = interval
-        st.rerun()
 
     st.markdown("---")
-
-    # 퀵 액션
-    st.markdown("##### ⚡ 빠른 분석")
-    quick_actions = {
-        "📊 차트 분석": "현재 차트 기술적 분석을 해주세요",
-        "💡 매매 전략": "현재 매매 전략을 제안해주세요",
-        "📐 지지/저항": "주요 지지선과 저항선을 알려주세요",
-        "📈 지표 분석": "현재 RSI와 EMA 상태를 분석해주세요",
-    }
-
-    for label, msg in quick_actions.items():
-        if st.button(label, use_container_width=True, key=f"quick_{label}"):
-            st.session_state.messages.append({"role": "user", "content": msg})
-            st.session_state._trigger_response = True
-            st.rerun()
-
-    st.markdown("---")
-    if st.button("🗑️ 대화 초기화", use_container_width=True):
-        st.session_state.messages = []
+    if st.button("💾 저장", use_container_width=True, type="primary"):
+        st.session_state.api_key = new_api_key
+        st.session_state.model = new_model
+        if new_interval != st.session_state.interval:
+            st.session_state.interval = new_interval
         st.rerun()
 
 
-# ─── 메인 레이아웃 ───
-chart_col, chat_col = st.columns([3, 2], gap="small")
+# ─── 채팅 다이얼로그 ───
+@st.dialog("💬 AI 트레이딩 어시스턴트", width="large")
+def chat_dialog():
+    interval_label = INTERVAL_LABELS.get(st.session_state.interval, st.session_state.interval)
 
-# ─── 차트 영역 ───
-with chart_col:
-    chart_html = get_chart_html(st.session_state.symbol, st.session_state.interval)
-    components.html(chart_html, height=620, scrolling=False)
-
-# ─── 채팅 영역 ───
-with chat_col:
     st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:10px;padding:8px 0 12px 0;">
-        <div style="width:32px;height:32px;border-radius:6px;background:linear-gradient(135deg,#00f5a0,#00d4ff);
-            display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#080b12;">AI</div>
-        <div>
-            <div style="font-size:14px;font-weight:600;color:#e8ecf1;">AI 트레이딩 어시스턴트</div>
-            <div style="font-size:11px;color:#8892a4;">
-                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#00f5a0;margin-right:4px;"></span>
-                {INTERVAL_LABELS[st.session_state.interval]} · {st.session_state.symbol.replace('BINANCE:', '')}
-            </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:0 0 8px 0;">
+        <div style="width:28px;height:28px;border-radius:6px;background:linear-gradient(135deg,#00f5a0,#00d4ff);
+            display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#080b12;">AI</div>
+        <div style="font-size:11px;color:#8892a4;">
+            {interval_label} · {st.session_state.symbol.replace('BINANCE:', '')} · 
+            모델: <strong style="color:#00f5a0">{st.session_state.model}</strong>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    if not api_key:
-        st.markdown("""
-        <div class="api-warning">
-            🔑 AI 채팅을 사용하려면 좌측 사이드바에서 OpenAI API 키를 설정하세요.
-        </div>
-        """, unsafe_allow_html=True)
+    if not st.session_state.api_key:
+        st.warning("🔑 설정(⚙️)에서 OpenAI API 키를 먼저 입력하세요.")
 
-    # 채팅 메시지 표시
-    chat_container = st.container(height=460)
+    # 빠른 분석 버튼
+    qa_cols = st.columns(4)
+    quick_items = [
+        ("📊 차트 분석", "현재 차트 기술적 분석을 해주세요"),
+        ("💡 매매 전략", "현재 매매 전략을 제안해주세요"),
+        ("📐 지지/저항", "주요 지지선과 저항선을 알려주세요"),
+        ("📈 지표 분석", "현재 RSI와 EMA 상태를 분석해주세요"),
+    ]
+    for i, (label, msg) in enumerate(quick_items):
+        with qa_cols[i]:
+            if st.button(label, key=f"qa_{i}", use_container_width=True):
+                st.session_state.messages.append({"role": "user", "content": msg})
+                st.session_state._need_response = True
+                st.rerun()
+
+    # 메시지 컨테이너
+    chat_container = st.container(height=400)
     with chat_container:
         if not st.session_state.messages:
             st.markdown("""
-            <div style="text-align:center;padding:40px 20px;">
-                <div style="width:48px;height:48px;margin:0 auto 12px;border-radius:12px;
-                    background:linear-gradient(135deg,#00f5a0,#00d4ff);display:flex;align-items:center;
-                    justify-content:center;font-size:20px;color:#080b12;">◈</div>
-                <h4 style="background:linear-gradient(135deg,#00f5a0,#00d4ff);-webkit-background-clip:text;
-                    -webkit-text-fill-color:transparent;margin-bottom:8px;">안녕하세요! AI 트레이딩 어시스턴트입니다</h4>
-                <p style="color:#8892a4;font-size:13px;line-height:1.6;">
-                    차트를 보면서 궁금한 점이나 분석이 필요한 부분을 물어보세요.<br>
-                    좌측 사이드바의 <strong style="color:#00f5a0;">빠른 분석</strong> 버튼도 활용해보세요!
-                </p>
+            <div style="text-align:center;padding:60px 20px;">
+                <div style="font-size:32px;margin-bottom:8px;">◈</div>
+                <p style="color:#8892a4;font-size:13px;">차트에 대해 궁금한 점을 물어보세요</p>
             </div>
             """, unsafe_allow_html=True)
-
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"], avatar="◈" if msg["role"] == "assistant" else "👤"):
-                st.markdown(msg["content"])
-
-    # AI 응답 생성 (퀵 액션 트리거)
-    if getattr(st.session_state, "_trigger_response", False) and api_key:
-        st.session_state._trigger_response = False
-        client = OpenAI(api_key=api_key)
-        interval_label = INTERVAL_LABELS.get(st.session_state.interval, st.session_state.interval)
-        sys_prompt = get_system_prompt(st.session_state.symbol, interval_label)
-
-        with chat_container:
-            with st.chat_message("assistant", avatar="◈"):
-                stream = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": sys_prompt},
-                        *st.session_state.messages
-                    ],
-                    stream=True,
-                    temperature=0.7,
-                    max_tokens=2000,
-                )
-                response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.rerun()
-
-    # 채팅 입력
-    if prompt := st.chat_input("차트에 대해 질문하세요...", key="chat_input"):
-        if not api_key:
-            st.warning("🔑 먼저 사이드바에서 OpenAI API 키를 설정해주세요.")
         else:
-            st.session_state.messages.append({"role": "user", "content": prompt})
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"], avatar="◈" if msg["role"] == "assistant" else "👤"):
+                    st.markdown(msg["content"])
 
-            client = OpenAI(api_key=api_key)
-            interval_label = INTERVAL_LABELS.get(st.session_state.interval, st.session_state.interval)
+    # AI 응답 생성 (pending response)
+    if st.session_state.get("_need_response") and st.session_state.api_key:
+        st.session_state._need_response = False
+        try:
+            client = OpenAI(api_key=st.session_state.api_key)
             sys_prompt = get_system_prompt(st.session_state.symbol, interval_label)
-
             with chat_container:
-                with st.chat_message("user", avatar="👤"):
-                    st.markdown(prompt)
                 with st.chat_message("assistant", avatar="◈"):
                     stream = client.chat.completions.create(
-                        model=model,
+                        model=st.session_state.model,
                         messages=[
                             {"role": "system", "content": sys_prompt},
                             *st.session_state.messages
@@ -473,6 +420,54 @@ with chat_col:
                         max_tokens=2000,
                     )
                     response = st.write_stream(stream)
-
             st.session_state.messages.append({"role": "assistant", "content": response})
+        except Exception as e:
+            st.error(f"오류: {e}")
+
+    # 입력 폼
+    with st.form("chat_form", clear_on_submit=True):
+        cols = st.columns([7, 1])
+        with cols[0]:
+            user_input = st.text_input(
+                "메시지",
+                label_visibility="collapsed",
+                placeholder="차트에 대해 질문하세요...",
+            )
+        with cols[1]:
+            submitted = st.form_submit_button("전송")
+    
+    if submitted and user_input:
+        if not st.session_state.api_key:
+            st.warning("🔑 API 키를 먼저 설정하세요.")
+        else:
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            st.session_state._need_response = True
             st.rerun()
+
+    # 하단 버튼
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🗑️ 대화 초기화", key="clear_chat", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+    with c2:
+        if st.button("✕ 닫기", key="close_chat", use_container_width=True):
+            st.rerun()
+
+
+# ─── 플로팅 버튼 (설정 & 채팅) ───
+btn_cols = st.columns([1, 1])
+with btn_cols[0]:
+    if st.button("⚙️", key="settings_btn"):
+        settings_dialog()
+with btn_cols[1]:
+    if st.button("💬", key="chat_btn"):
+        chat_dialog()
+
+# 퀵 액션에서 돌아온 경우 자동으로 채팅 다이얼로그 열기
+if st.session_state.get("_need_response"):
+    chat_dialog()
+
+# ─── 전체화면 차트 ───
+chart_html = get_chart_html(st.session_state.symbol, st.session_state.interval)
+components.html(chart_html, height=900, scrolling=False)
