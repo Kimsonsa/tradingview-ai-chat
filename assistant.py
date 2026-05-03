@@ -18,41 +18,60 @@ st.set_page_config(
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    .stApp { font-family: 'Inter', sans-serif; }
 
-    /* 사이드바 스타일 */
+    .stApp {
+        font-family: 'Inter', sans-serif;
+    }
+
+    /* 사이드바 */
     section[data-testid="stSidebar"] {
-        background: #0d1117;
-        border-right: 1px solid rgba(255,255,255,0.06);
+        background: #F8F9FB;
+        border-right: 1px solid #E2E8F0;
+    }
+    section[data-testid="stSidebar"] .stMarkdown h3,
+    section[data-testid="stSidebar"] .stMarkdown h4 {
+        color: #334155;
     }
 
     /* 채팅 메시지 */
-    .stChatMessage { border-radius: 10px !important; }
+    .stChatMessage {
+        border-radius: 12px !important;
+        border: 1px solid #E8ECF0 !important;
+        background: #FFFFFF !important;
+    }
 
-    /* 캡쳐 미리보기 */
-    .capture-preview {
-        border: 1px solid rgba(0,245,160,0.2);
+    /* 버튼 스타일 */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 500;
+        border: 1px solid #D1D9E0;
+        transition: all 0.15s ease;
+    }
+    .stButton > button:hover {
+        border-color: #2962FF;
+        color: #2962FF;
+    }
+
+    /* 입력 필드 */
+    .stTextInput > div > div > input,
+    .stSelectbox > div > div,
+    .stChatInput > div > div > textarea {
+        border-radius: 8px !important;
+        border: 1px solid #D1D9E0 !important;
+    }
+
+    /* 캡쳐 이미지 */
+    .stImage {
         border-radius: 10px;
         overflow: hidden;
-        margin: 8px 0;
+        border: 1px solid #E2E8F0;
     }
 
-    /* 상태 배지 */
-    .status-badge {
-        display: inline-flex; align-items: center; gap: 6px;
-        padding: 4px 12px; border-radius: 20px;
-        font-size: 12px; font-weight: 600;
-    }
-    .status-badge.ready {
-        background: rgba(0,245,160,0.1);
-        color: #00f5a0;
-        border: 1px solid rgba(0,245,160,0.2);
-    }
-    .status-badge.error {
-        background: rgba(255,71,87,0.1);
-        color: #ff4757;
-        border: 1px solid rgba(255,71,87,0.2);
-    }
+    /* 헤더 */
+    h2 { color: #1E293B; }
+
+    /* 구분선 */
+    hr { border-color: #E8ECF0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
