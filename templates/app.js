@@ -48,6 +48,17 @@
         'RSI@tv-basicstudies',
         'Volume@tv-basicstudies'
       ],
+      studies_overrides: {
+        'moving average exponential.length': 20,
+        'moving average exponential.plot.color': '#00d4ff',
+        'moving average exponential.plot.linewidth': 2,
+        'moving average exponential #2.length': 50,
+        'moving average exponential #2.plot.color': '#f59e0b',
+        'moving average exponential #2.plot.linewidth': 2,
+        'moving average exponential #3.length': 200,
+        'moving average exponential #3.plot.color': '#a855f7',
+        'moving average exponential #3.plot.linewidth': 2
+      },
       support_host: 'https://www.tradingview.com'
     });
     wrapper.appendChild(inner);
