@@ -3,6 +3,7 @@ TradingView 창 자동 감지 및 캡쳐 모듈
 - GPU 가속 앱(Electron) 호환: 화면 직접 캡쳐 방식
 """
 import io
+import re
 import time
 import base64
 import pyautogui
@@ -41,6 +42,61 @@ def find_tradingview_window():
             best_area = area
 
     return best
+
+
+INTERVAL_PARSE_MAP = {
+    '1': '1분', '3': '3분', '5': '5분', '15': '15분', '30': '30분',
+    '45': '45분', '60': '1시간', '120': '2시간', '180': '3시간',
+    '240': '4시간', '1D': '1일', 'D': '1일', '1W': '1주', 'W': '1주',
+    '1M': '1개월', 'M': '1개월',
+}
+
+BINANCE_INTERVAL_MAP = {
+    '1분': '1m', '3분': '3m', '5분': '5m', '15분': '15m', '30분': '30m',
+    '45분': '45m', '1시간': '1h', '2시간': '2h', '3시간': '3h',
+    '4시간': '4h', '1일': '1d', '1주': '1w', '1개월': '1M',
+}
+
+
+def parse_window_title(title):
+    """TradingView 창 타이틀에서 종목과 타임프레임 추출
+    예: 'BTCUSDT.P, 60, Binance — TradingView' → ('BTCUSDT', '1시간')
+    예: 'BTCUSDT.P ▲ 78,661.4 +0.01 × 세 탭' → ('BTCUSDT', None)
+    """
+    symbol = None
+    interval_label = None
+
+    # 종목 추출: XXXUSDT 패턴
+    sym_match = re.search(r'([A-Z]{2,10}USDT)(?:\.P)?', title.upper())
+    if sym_match:
+        symbol = sym_match.group(1)
+
+    # 타임프레임 추출: 쉼표 구분 형식 (예: 'BTCUSDT.P, 60, Binance')
+    parts = [p.strip() for p in title.split(',')]
+    for part in parts:
+        clean = part.strip()
+        if clean in INTERVAL_PARSE_MAP:
+            interval_label = INTERVAL_PARSE_MAP[clean]
+            break
+
+    # 타임프레임: 타이틀 내 · 구분 형식 (예: '1시간 · Binance')
+    if not interval_label:
+        tf_match = re.search(r'(\d+[mhDWM]|\d+분|\d+시간|\d+일)', title)
+        if tf_match:
+            tf = tf_match.group(1)
+            # 1h, 4h 등
+            h_match = re.match(r'(\d+)h', tf)
+            m_match = re.match(r'(\d+)m', tf)
+            if h_match:
+                interval_label = f"{h_match.group(1)}시간"
+            elif m_match:
+                interval_label = f"{m_match.group(1)}분"
+            elif tf in INTERVAL_PARSE_MAP:
+                interval_label = INTERVAL_PARSE_MAP[tf]
+            else:
+                interval_label = tf
+
+    return symbol, interval_label
 
 
 def capture_tradingview():

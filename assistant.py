@@ -2,7 +2,7 @@
 TradeAI Assistant — TradingView 자동 캡쳐 + AI 분석 데스크탑 앱
 """
 import streamlit as st
-from core.capture import capture_tradingview, image_to_base64
+from core.capture import capture_tradingview, image_to_base64, parse_window_title, BINANCE_INTERVAL_MAP
 from core.market_data import get_market_context, INTERVAL_OPTIONS
 from core.ai_client import analyze_chart
 
@@ -92,14 +92,11 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 차트 설정
-    st.markdown("#### 📊 분석 설정")
-    symbol = st.text_input("종목 (Binance)", value=st.session_state.symbol)
-    st.session_state.symbol = symbol
-
-    interval = st.selectbox("타임프레임", INTERVAL_OPTIONS,
-                            index=INTERVAL_OPTIONS.index(st.session_state.interval))
-    st.session_state.interval = interval
+    # 감지된 차트 정보 (자동)
+    st.markdown("#### 📊 감지된 차트")
+    st.markdown(f"**종목**: `{st.session_state.symbol}`")
+    st.markdown(f"**타임프레임**: `{st.session_state.interval}`")
+    st.caption("⬆️ TradingView 창에서 자동 감지")
 
     st.markdown("---")
 
@@ -113,9 +110,16 @@ with st.sidebar:
             if img:
                 st.session_state.last_capture = img
                 st.session_state.last_capture_b64 = image_to_base64(img)
+                # 자동 감지
+                sym, tf = parse_window_title(title)
+                if sym:
+                    st.session_state.symbol = sym
+                if tf:
+                    st.session_state.interval = tf
                 st.success(f"✅ 캡쳐 완료: {title}")
+                st.rerun()
             else:
-                st.error(title)  # error message
+                st.error(title)
 
     if st.session_state.last_capture:
         st.image(st.session_state.last_capture, caption="마지막 캡쳐", use_container_width=True)
@@ -176,6 +180,12 @@ if prompt:
                     st.session_state.last_capture_b64 = image_to_base64(img)
                     capture_b64 = st.session_state.last_capture_b64
                     capture_img = img
+                    # 자동 감지
+                    sym, tf = parse_window_title(title)
+                    if sym:
+                        st.session_state.symbol = sym
+                    if tf:
+                        st.session_state.interval = tf
         elif st.session_state.last_capture_b64:
             capture_b64 = st.session_state.last_capture_b64
             capture_img = st.session_state.last_capture
