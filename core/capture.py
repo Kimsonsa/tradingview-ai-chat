@@ -7,11 +7,21 @@ import io
 import re
 import time
 import base64
+import ctypes
 import pyautogui
 from PIL import Image
 
 import win32gui
 import win32con
+
+# 멀티모니터 DPI 스케일링 대응 — 모든 모니터에서 정확한 좌표 보장
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor DPI Aware
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()  # System DPI Aware (fallback)
+    except Exception:
+        pass
 
 
 def _is_tradingview_window(title):
