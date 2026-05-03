@@ -67,12 +67,12 @@ class ChatManager {
           ...this.messages
         ],
         stream: true,
-        temperature: 0.7,
       };
       if (useNewParam) {
         body.max_completion_tokens = 2000;
       } else {
         body.max_tokens = 2000;
+        body.temperature = 0.7;
       }
 
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
