@@ -2,7 +2,7 @@
 TradeAI Assistant — TradingView 자동 캡쳐 + AI 분석 데스크탑 앱
 """
 import streamlit as st
-from core.capture import capture_tradingview, image_to_base64, parse_window_title, BINANCE_INTERVAL_MAP
+from core.capture import capture_tradingview, image_to_base64, parse_window_title, detect_chart_info, BINANCE_INTERVAL_MAP
 from core.market_data import get_market_context, INTERVAL_OPTIONS
 from core.ai_client import analyze_chart
 
@@ -104,6 +104,16 @@ if "last_capture_b64" not in st.session_state:
     st.session_state.last_capture_b64 = None
 if "auto_capture" not in st.session_state:
     st.session_state.auto_capture = True
+
+# ─── 페이지 로드 시 TradingView 창에서 자동 감지 ───
+try:
+    _sym, _tf, _title = detect_chart_info()
+    if _sym:
+        st.session_state.symbol = _sym
+    if _tf:
+        st.session_state.interval = _tf
+except Exception:
+    pass
 
 # ─── 사이드바: 설정 ───
 with st.sidebar:

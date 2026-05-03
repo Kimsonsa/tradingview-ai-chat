@@ -1,6 +1,7 @@
-"""
-TradingView 창 자동 감지 및 캡쳐 모듈
+"""TradingView 창 자동 감지 및 캡쳐 모듈
 - GPU 가속 앱(Electron) 호환: 화면 직접 캡쳐 방식
+- SetForegroundWindow 제한 우회
+- 창 타이틀에서 종목/타임프레임 자동 감지
 """
 import io
 import re
@@ -59,10 +60,7 @@ BINANCE_INTERVAL_MAP = {
 
 
 def parse_window_title(title):
-    """TradingView 창 타이틀에서 종목과 타임프레임 추출
-    예: 'BTCUSDT.P, 60, Binance — TradingView' → ('BTCUSDT', '1시간')
-    예: 'BTCUSDT.P ▲ 78,661.4 +0.01 × 세 탭' → ('BTCUSDT', None)
-    """
+    """TradingView 창 타이틀에서 종목과 타임프레임 추출"""
     symbol = None
     interval_label = None
 
@@ -71,7 +69,7 @@ def parse_window_title(title):
     if sym_match:
         symbol = sym_match.group(1)
 
-    # 타임프레임 추출: 쉼표 구분 형식 (예: 'BTCUSDT.P, 60, Binance')
+    # 타임프레임 추출: 쉼표 구분 형식
     parts = [p.strip() for p in title.split(',')]
     for part in parts:
         clean = part.strip()
@@ -79,12 +77,11 @@ def parse_window_title(title):
             interval_label = INTERVAL_PARSE_MAP[clean]
             break
 
-    # 타임프레임: 타이틀 내 · 구분 형식 (예: '1시간 · Binance')
+    # 타임프레임: · 구분 형식
     if not interval_label:
         tf_match = re.search(r'(\d+[mhDWM]|\d+분|\d+시간|\d+일)', title)
         if tf_match:
             tf = tf_match.group(1)
-            # 1h, 4h 등
             h_match = re.match(r'(\d+)h', tf)
             m_match = re.match(r'(\d+)m', tf)
             if h_match:
@@ -99,6 +96,40 @@ def parse_window_title(title):
     return symbol, interval_label
 
 
+def detect_chart_info():
+    """TradingView 창에서 현재 종목/타임프레임 정보만 가져오기 (캡쳐 없이)"""
+    result = find_tradingview_window()
+    if result is None or result[0] is None:
+        return None, None, None
+
+    hwnd, title = result
+    symbol, interval = parse_window_title(title)
+    return symbol, interval, title
+
+
+def _bring_to_front(hwnd):
+    """창을 최전면으로 (SetForegroundWindow 제한 우회)"""
+    try:
+        # 최소화 상태면 복원
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.3)
+
+        # Alt키 트릭으로 포그라운드 잠금 해제
+        import ctypes
+        ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)  # Alt down
+        ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)  # Alt up
+        time.sleep(0.05)
+
+        win32gui.SetForegroundWindow(hwnd)
+        time.sleep(0.4)
+        return True
+    except Exception:
+        # 실패해도 계속 진행 (side-by-side 배치면 캡쳐 가능)
+        time.sleep(0.2)
+        return False
+
+
 def capture_tradingview():
     """TradingView 창을 자동으로 찾아 캡쳐.
     반환: (image, window_title) 또는 (None, error_msg)
@@ -110,14 +141,8 @@ def capture_tradingview():
     hwnd, title = result
 
     try:
-        # TradingView 창을 최전면으로 가져오기
-        # 최소화 상태면 복원
-        if win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            time.sleep(0.5)
-
-        win32gui.SetForegroundWindow(hwnd)
-        time.sleep(0.5)  # 창이 완전히 렌더링되도록 대기
+        # 창을 최전면으로 시도 (실패해도 계속)
+        _bring_to_front(hwnd)
 
         # 창 영역 가져오기
         rect = win32gui.GetWindowRect(hwnd)
@@ -125,7 +150,10 @@ def capture_tradingview():
         w = x2 - x
         h = y2 - y
 
-        # 화면에서 직접 해당 영역 캡쳐 (GPU 가속 앱도 정상 캡쳐)
+        if w < 100 or h < 100:
+            return None, "TradingView 창이 너무 작습니다."
+
+        # 화면에서 직접 해당 영역 캡쳐 (GPU 가속 앱도 정상)
         img = pyautogui.screenshot(region=(x, y, w, h))
 
         return img, title
@@ -142,7 +170,7 @@ def image_to_base64(img, max_size=1600):
         new_size = (int(img.width * ratio), int(img.height * ratio))
         img = img.resize(new_size, Image.LANCZOS)
 
-    # RGB로 변환 (RGBA일 경우)
+    # RGB로 변환
     if img.mode == 'RGBA':
         bg = Image.new('RGB', img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])
