@@ -134,14 +134,23 @@ def capture_tradingview():
         return None, f"캡쳐 실패: {str(e)}"
 
 
-def image_to_base64(img, max_size=1920):
-    """PIL Image를 base64 문자열로 변환 (리사이즈 포함)"""
-    # 너무 크면 리사이즈
+def image_to_base64(img, max_size=1600):
+    """PIL Image를 base64 문자열로 변환 (JPEG 압축)"""
+    # 리사이즈
     if img.width > max_size or img.height > max_size:
         ratio = min(max_size / img.width, max_size / img.height)
         new_size = (int(img.width * ratio), int(img.height * ratio))
         img = img.resize(new_size, Image.LANCZOS)
 
+    # RGB로 변환 (RGBA일 경우)
+    if img.mode == 'RGBA':
+        bg = Image.new('RGB', img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    elif img.mode != 'RGB':
+        img = img.convert('RGB')
+
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG", optimize=True)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    img.save(buffer, format="JPEG", quality=85, optimize=True)
+    b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return b64, len(buffer.getvalue())

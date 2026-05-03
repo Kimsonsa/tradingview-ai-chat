@@ -139,15 +139,16 @@ with st.sidebar:
         with st.spinner("TradingView 캡쳐 중..."):
             img, title = capture_tradingview()
             if img:
+                b64, size = image_to_base64(img)
                 st.session_state.last_capture = img
-                st.session_state.last_capture_b64 = image_to_base64(img)
+                st.session_state.last_capture_b64 = b64
                 # 자동 감지
                 sym, tf = parse_window_title(title)
                 if sym:
                     st.session_state.symbol = sym
                 if tf:
                     st.session_state.interval = tf
-                st.success(f"✅ 캡쳐 완료: {title}")
+                st.success(f"✅ 캡쳐 완료 ({size // 1024}KB)")
                 st.rerun()
             else:
                 st.error(title)
@@ -212,20 +213,25 @@ if prompt:
         # 자동 캡쳐
         capture_b64 = None
         capture_img = None
+        capture_size = 0
         if st.session_state.auto_capture:
             with st.spinner("📸 TradingView 캡쳐 중..."):
                 img, title = capture_tradingview()
                 if img:
+                    b64, size = image_to_base64(img)
                     st.session_state.last_capture = img
-                    st.session_state.last_capture_b64 = image_to_base64(img)
-                    capture_b64 = st.session_state.last_capture_b64
+                    st.session_state.last_capture_b64 = b64
+                    capture_b64 = b64
                     capture_img = img
+                    capture_size = size
                     # 자동 감지
                     sym, tf = parse_window_title(title)
                     if sym:
                         st.session_state.symbol = sym
                     if tf:
                         st.session_state.interval = tf
+                else:
+                    st.warning(f"⚠️ 캡쳐 실패: {title}")
         elif st.session_state.last_capture_b64:
             capture_b64 = st.session_state.last_capture_b64
             capture_img = st.session_state.last_capture
@@ -243,16 +249,23 @@ if prompt:
         with st.chat_message("assistant", avatar="🤖"):
             if capture_img:
                 st.image(capture_img, caption="📸 분석 중인 차트", use_container_width=True)
+                st.caption(f"✅ 이미지 첨부됨 ({capture_size // 1024}KB) — {st.session_state.model}")
+            else:
+                st.caption("⚠️ 차트 이미지 없이 데이터만으로 분석합니다")
 
-            response = st.write_stream(
-                analyze_chart(
-                    api_key=st.session_state.api_key,
-                    model=st.session_state.model,
-                    messages=st.session_state.messages,
-                    image_base64=capture_b64,
-                    market_data=market_data,
+            try:
+                response = st.write_stream(
+                    analyze_chart(
+                        api_key=st.session_state.api_key,
+                        model=st.session_state.model,
+                        messages=st.session_state.messages,
+                        image_base64=capture_b64,
+                        market_data=market_data,
+                    )
                 )
-            )
+            except Exception as e:
+                response = f"⚠️ API 오류: {str(e)}"
+                st.error(response)
 
         st.session_state.messages.append({
             "role": "assistant",
