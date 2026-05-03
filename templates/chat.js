@@ -59,22 +59,29 @@ class ChatManager {
     const model = localStorage.getItem('tradeai_model') || 'gpt-5.5';
 
     try {
+      const useNewParam = model.startsWith('gpt-5') || model.startsWith('o3') || model.startsWith('o4');
+      const body = {
+        model: model,
+        messages: [
+          { role: 'system', content: this.getSystemPrompt() },
+          ...this.messages
+        ],
+        stream: true,
+        temperature: 0.7,
+      };
+      if (useNewParam) {
+        body.max_completion_tokens = 2000;
+      } else {
+        body.max_tokens = 2000;
+      }
+
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`
         },
-        body: JSON.stringify({
-          model: model,
-          messages: [
-            { role: 'system', content: this.getSystemPrompt() },
-            ...this.messages
-          ],
-          stream: true,
-          temperature: 0.7,
-          max_tokens: 2000
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
