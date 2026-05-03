@@ -1,13 +1,14 @@
 """
 TradingView 창 자동 감지 및 캡쳐 모듈
+- GPU 가속 앱(Electron) 호환: 화면 직접 캡쳐 방식
 """
 import io
-import ctypes
-from ctypes import wintypes
+import time
+import base64
+import pyautogui
 from PIL import Image
 
 import win32gui
-import win32ui
 import win32con
 
 
@@ -32,85 +33,53 @@ def find_tradingview_window():
     best_area = 0
     for hwnd, title in results:
         rect = win32gui.GetWindowRect(hwnd)
-        area = (rect[2] - rect[0]) * (rect[3] - rect[1])
-        if area > best_area:
+        w = rect[2] - rect[0]
+        h = rect[3] - rect[1]
+        area = w * h
+        if area > best_area and w > 200 and h > 200:
             best = (hwnd, title)
             best_area = area
 
     return best
 
 
-def capture_window(hwnd):
-    """특정 윈도우 핸들의 화면을 캡쳐하여 PIL Image로 반환"""
-    try:
-        # 창을 포그라운드로 가져오기
-        win32gui.SetForegroundWindow(hwnd)
-        import time
-        time.sleep(0.3)
-
-        # 창 크기 가져오기
-        rect = win32gui.GetWindowRect(hwnd)
-        x, y, x2, y2 = rect
-        w = x2 - x
-        h = y2 - y
-
-        # 화면 캡쳐 (PrintWindow 사용)
-        hwndDC = win32gui.GetWindowDC(hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-
-        saveBitMap = win32ui.CreateBitmap()
-        saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
-        saveDC.SelectObject(saveBitMap)
-
-        # PrintWindow로 캡쳐 (DWM 합성 포함)
-        ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
-
-        # 비트맵 → PIL Image
-        bmpinfo = saveBitMap.GetInfo()
-        bmpstr = saveBitMap.GetBitmapBits(True)
-
-        img = Image.frombuffer(
-            "RGB",
-            (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
-            bmpstr, "raw", "BGRX", 0, 1
-        )
-
-        # 정리
-        win32gui.DeleteObject(saveBitMap.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwndDC)
-
-        return img
-
-    except Exception as e:
-        # PrintWindow 실패 시 pyautogui fallback
-        import pyautogui
-        rect = win32gui.GetWindowRect(hwnd)
-        x, y, x2, y2 = rect
-        img = pyautogui.screenshot(region=(x, y, x2 - x, y2 - y))
-        return img
-
-
 def capture_tradingview():
-    """TradingView 창을 자동으로 찾아 캡쳐. 반환: (image, window_title) 또는 (None, error_msg)"""
+    """TradingView 창을 자동으로 찾아 캡쳐.
+    반환: (image, window_title) 또는 (None, error_msg)
+    """
     result = find_tradingview_window()
     if result is None or result[0] is None:
         return None, "TradingView 앱을 찾을 수 없습니다. TradingView 데스크탑 앱이 실행 중인지 확인하세요."
 
     hwnd, title = result
-    img = capture_window(hwnd)
-    if img is None:
-        return None, "화면 캡쳐에 실패했습니다."
 
-    return img, title
+    try:
+        # TradingView 창을 최전면으로 가져오기
+        # 최소화 상태면 복원
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.5)
+
+        win32gui.SetForegroundWindow(hwnd)
+        time.sleep(0.5)  # 창이 완전히 렌더링되도록 대기
+
+        # 창 영역 가져오기
+        rect = win32gui.GetWindowRect(hwnd)
+        x, y, x2, y2 = rect
+        w = x2 - x
+        h = y2 - y
+
+        # 화면에서 직접 해당 영역 캡쳐 (GPU 가속 앱도 정상 캡쳐)
+        img = pyautogui.screenshot(region=(x, y, w, h))
+
+        return img, title
+
+    except Exception as e:
+        return None, f"캡쳐 실패: {str(e)}"
 
 
 def image_to_base64(img, max_size=1920):
     """PIL Image를 base64 문자열로 변환 (리사이즈 포함)"""
-    import base64
-
     # 너무 크면 리사이즈
     if img.width > max_size or img.height > max_size:
         ratio = min(max_size / img.width, max_size / img.height)
