@@ -25,53 +25,65 @@ st.markdown("""
 
     /* 사이드바 */
     section[data-testid="stSidebar"] {
-        background: #F8F9FB;
-        border-right: 1px solid #E2E8F0;
+        background: #FFF8E7;
+        border-right: 1px solid #E8DFC8;
     }
     section[data-testid="stSidebar"] .stMarkdown h3,
     section[data-testid="stSidebar"] .stMarkdown h4 {
-        color: #334155;
+        color: #5D4E37;
+    }
+    section[data-testid="stSidebar"] .stMarkdown {
+        color: #4A4A4A;
     }
 
     /* 채팅 메시지 */
     .stChatMessage {
         border-radius: 12px !important;
-        border: 1px solid #E8ECF0 !important;
-        background: #FFFFFF !important;
+        border: 1px solid #E8DFC8 !important;
+        background: #FFFEF8 !important;
     }
 
     /* 버튼 스타일 */
     .stButton > button {
         border-radius: 8px;
         font-weight: 500;
-        border: 1px solid #D1D9E0;
+        border: 1px solid #D4C9A8;
+        color: #5D4E37;
         transition: all 0.15s ease;
     }
     .stButton > button:hover {
         border-color: #2962FF;
         color: #2962FF;
+        background: #FFF8E7;
     }
 
     /* 입력 필드 */
     .stTextInput > div > div > input,
-    .stSelectbox > div > div,
-    .stChatInput > div > div > textarea {
+    .stSelectbox > div > div {
         border-radius: 8px !important;
-        border: 1px solid #D1D9E0 !important;
+        border: 1px solid #D4C9A8 !important;
+        background: #FFFEF8 !important;
+        color: #2D3436 !important;
     }
 
     /* 캡쳐 이미지 */
     .stImage {
         border-radius: 10px;
         overflow: hidden;
-        border: 1px solid #E2E8F0;
+        border: 1px solid #E8DFC8;
     }
 
     /* 헤더 */
-    h2 { color: #1E293B; }
+    h2 { color: #3D3425; }
 
     /* 구분선 */
-    hr { border-color: #E8ECF0 !important; }
+    hr { border-color: #E8DFC8 !important; }
+
+    /* 코드 블록 (분석 결과) */
+    .stMarkdown code {
+        background: #FFF3D6 !important;
+        color: #5D4E37 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -151,8 +163,17 @@ with st.sidebar:
         st.rerun()
 
 # ─── 메인: 채팅 ───
-st.markdown("## ◈ AI 트레이딩 어시스턴트")
-st.caption(f"📊 {st.session_state.symbol} · {st.session_state.interval} · 모델: {st.session_state.model}")
+col_title, col_btn = st.columns([5, 1])
+with col_title:
+    st.markdown("## ◈ AI 트레이딩 어시스턴트")
+    st.caption(f"📊 {st.session_state.symbol} · {st.session_state.interval} · 모델: {st.session_state.model}")
+with col_btn:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🗑️ 채팅 초기화", key="clear_main"):
+        st.session_state.messages = []
+        st.session_state.last_capture = None
+        st.session_state.last_capture_b64 = None
+        st.rerun()
 
 # 이전 메시지 표시
 for msg in st.session_state.messages:

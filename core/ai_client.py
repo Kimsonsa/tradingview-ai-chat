@@ -58,10 +58,15 @@ def analyze_chart(api_key, model, messages, image_base64=None, market_data=""):
     else:
         api_messages.append({"role": "user", "content": last_msg["content"]})
 
+    # 이미지 포함 시 비전 지원 모델로 자동 전환
+    vision_model = model
+    if image_base64 and model not in ("gpt-4o", "gpt-4-turbo"):
+        vision_model = "gpt-4o"  # 가장 안정적인 비전 모델
+
     # 모델별 파라미터 조정
-    is_new = model.startswith("gpt-5") or model.startswith("o3") or model.startswith("o4")
+    is_new = vision_model.startswith("gpt-5") or vision_model.startswith("o3") or vision_model.startswith("o4")
     kwargs = {
-        "model": model,
+        "model": vision_model,
         "messages": api_messages,
         "stream": True,
     }
