@@ -55,11 +55,11 @@
     container.appendChild(wrapper);
   }
 
-  /* ---- Timeframe ---- */
+  /* ---- Timeframe (AI 분석용 컨텍스트만 변경, 차트 재생성 안함) ---- */
   function changeInterval(interval) {
     state.interval = interval;
     localStorage.setItem('tradeai_interval', interval);
-    createWidget();
+    // 차트는 재생성하지 않음 — TradingView 내장 툴바로 변경
     updateContextUI();
     document.querySelectorAll('.tf-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.interval === interval);
