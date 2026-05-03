@@ -87,13 +87,33 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ─── 세션 상태 초기화 ───
+# ─── 설정 파일 (로컬 영구 저장) ───
+import json, os
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), ".tradeai_config.json")
+
+def load_config():
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_config(data):
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+_config = load_config()
+
+# ─── 세션 상태 초기화 (저장된 설정 우선) ───
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
+    st.session_state.api_key = _config.get("api_key", "")
 if "model" not in st.session_state:
-    st.session_state.model = "gpt-5.5"
+    st.session_state.model = _config.get("model", "gpt-5.5")
 if "interval" not in st.session_state:
     st.session_state.interval = "1시간"
 if "symbol" not in st.session_state:
@@ -126,10 +146,14 @@ with st.sidebar:
                             value=st.session_state.api_key, placeholder="sk-...")
     if api_key != st.session_state.api_key:
         st.session_state.api_key = api_key
+        save_config({"api_key": api_key, "model": st.session_state.model})
 
-    model = st.selectbox("AI 모델", ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
-                         index=["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"].index(st.session_state.model))
-    st.session_state.model = model
+    MODELS = ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+    model = st.selectbox("AI 모델", MODELS,
+                         index=MODELS.index(st.session_state.model) if st.session_state.model in MODELS else 0)
+    if model != st.session_state.model:
+        st.session_state.model = model
+        save_config({"api_key": st.session_state.api_key, "model": model})
 
     st.markdown("---")
 
