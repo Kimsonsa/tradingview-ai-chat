@@ -66,6 +66,7 @@
     });
     window.chatManager.setContext(
       state.symbol.replace('BINANCE:', ''),
+      interval,
       INTERVAL_LABELS[interval] || interval
     );
   }
@@ -243,6 +244,7 @@
 
     window.chatManager.setContext(
       state.symbol.replace('BINANCE:', ''),
+      state.interval,
       INTERVAL_LABELS[state.interval] || state.interval
     );
 

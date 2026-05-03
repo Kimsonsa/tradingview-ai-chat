@@ -1,41 +1,156 @@
 /* ============================================
-   Chat Module — Direct OpenAI API calls
+   Chat Module — Direct OpenAI API + Binance Market Data
    ============================================ */
+
+/* ---- Market Data Fetcher (Binance Futures API) ---- */
+class MarketData {
+  static INTERVAL_MAP = {
+    '1':'1m','5':'5m','15':'15m','60':'1h','240':'4h','D':'1d'
+  };
+
+  static async fetch(symbol, interval) {
+    const pair = symbol.replace('.P','').replace('BINANCE:','');
+    const bi = this.INTERVAL_MAP[interval] || '1h';
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${pair}&interval=${bi}&limit=210`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Binance API 오류');
+    const raw = await res.json();
+    // [openTime, open, high, low, close, volume, ...]
+    return raw.map(c => ({
+      time: c[0], open: +c[1], high: +c[2], low: +c[3], close: +c[4], volume: +c[5]
+    }));
+  }
+
+  static calcEMA(closes, period) {
+    const k = 2 / (period + 1);
+    let ema = closes[0];
+    const result = [ema];
+    for (let i = 1; i < closes.length; i++) {
+      ema = closes[i] * k + ema * (1 - k);
+      result.push(ema);
+    }
+    return result;
+  }
+
+  static calcRSI(closes, period = 14) {
+    const gains = [], losses = [];
+    for (let i = 1; i < closes.length; i++) {
+      const diff = closes[i] - closes[i - 1];
+      gains.push(diff > 0 ? diff : 0);
+      losses.push(diff < 0 ? -diff : 0);
+    }
+    let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    const rsi = [];
+    for (let i = period; i < gains.length; i++) {
+      avgGain = (avgGain * (period - 1) + gains[i]) / period;
+      avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+      const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+      rsi.push(+(100 - 100 / (1 + rs)).toFixed(2));
+    }
+    return rsi;
+  }
+
+  static async getAnalysisContext(symbol, interval) {
+    try {
+      const candles = await this.fetch(symbol, interval);
+      const closes = candles.map(c => c.close);
+      const volumes = candles.map(c => c.volume);
+
+      const ema20 = this.calcEMA(closes, 20);
+      const ema50 = this.calcEMA(closes, 50);
+      const ema200 = this.calcEMA(closes, 200);
+      const rsi = this.calcRSI(closes);
+
+      const last = candles[candles.length - 1];
+      const cur = last.close;
+      const e20 = ema20[ema20.length - 1];
+      const e50 = ema50[ema50.length - 1];
+      const e200 = ema200[ema200.length - 1];
+      const curRSI = rsi[rsi.length - 1];
+
+      // 최근 20봉 고가/저가
+      const recent20 = candles.slice(-20);
+      const high20 = Math.max(...recent20.map(c => c.high));
+      const low20 = Math.min(...recent20.map(c => c.low));
+
+      // 최근 5봉 평균 거래량 vs 현재
+      const avgVol5 = volumes.slice(-6, -1).reduce((a, b) => a + b, 0) / 5;
+      const curVol = last.volume;
+      const volRatio = (curVol / avgVol5 * 100).toFixed(0);
+
+      // 최근 10봉 데이터
+      const recentCandles = candles.slice(-10).map(c =>
+        `  ${new Date(c.time).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} | O:${c.open.toFixed(1)} H:${c.high.toFixed(1)} L:${c.low.toFixed(1)} C:${c.close.toFixed(1)} V:${c.volume.toFixed(0)}`
+      ).join('\n');
+
+      // EMA 배열 판단
+      let trend = '';
+      if (cur > e20 && e20 > e50 && e50 > e200) trend = '강한 상승 정배열 ↑';
+      else if (cur > e20 && e20 > e50) trend = '상승 추세 ↑';
+      else if (cur < e20 && e20 < e50 && e50 < e200) trend = '강한 하락 역배열 ↓';
+      else if (cur < e20 && e20 < e50) trend = '하락 추세 ↓';
+      else trend = '횡보/혼조세 ↔';
+
+      return `
+📊 실시간 시장 데이터 (Binance Futures):
+━━━━━━━━━━━━━━━━━━━━━━━
+현재가: ${cur.toFixed(1)} USDT
+24봉 고가: ${high20.toFixed(1)} | 24봉 저가: ${low20.toFixed(1)}
+
+📈 이동평균선 (EMA):
+- EMA 20: ${e20.toFixed(1)} (${cur > e20 ? '현재가 위 ▲' : '현재가 아래 ▼'})
+- EMA 50: ${e50.toFixed(1)} (${cur > e50 ? '현재가 위 ▲' : '현재가 아래 ▼'})
+- EMA 200: ${e200.toFixed(1)} (${cur > e200 ? '현재가 위 ▲' : '현재가 아래 ▼'})
+- EMA 배열: ${trend}
+
+📉 RSI (14): ${curRSI} ${curRSI > 70 ? '⚠️ 과매수 구간' : curRSI < 30 ? '⚠️ 과매도 구간' : '중립 구간'}
+
+📊 거래량:
+- 현재봉 거래량: ${curVol.toFixed(0)}
+- 최근5봉 평균 대비: ${volRatio}% ${+volRatio > 150 ? '🔥 거래량 급증' : +volRatio < 50 ? '📉 거래량 감소' : ''}
+
+📋 최근 10봉 OHLCV:
+${recentCandles}
+━━━━━━━━━━━━━━━━━━━━━━━`;
+    } catch (e) {
+      console.error('Market data error:', e);
+      return '\n⚠️ 실시간 데이터를 가져오지 못했습니다. 일반 분석으로 진행합니다.\n';
+    }
+  }
+}
+
+
+/* ---- Chat Manager ---- */
 class ChatManager {
   constructor() {
     this.messages = [];
     this.isStreaming = false;
-    this.chartContext = { symbol: 'BTCUSDT.P', interval: '1시간' };
+    this.chartContext = { symbol: 'BTCUSDT.P', interval: '60', intervalLabel: '1시간' };
   }
 
-  setContext(symbol, interval) {
-    this.chartContext = { symbol, interval };
+  setContext(symbol, interval, intervalLabel) {
+    this.chartContext = { symbol, interval, intervalLabel: intervalLabel || interval };
   }
 
-  getSystemPrompt() {
-    return `당신은 전문 암호화폐 트레이딩 분석가입니다.
+  getSystemPrompt(marketData) {
+    return `당신은 전문 암호화폐 트레이딩 분석가입니다. 아래 실시간 데이터를 기반으로 구체적인 기술적 분석을 제공합니다.
 
 현재 차트 정보:
 - 종목: ${this.chartContext.symbol}
-- 타임프레임: ${this.chartContext.interval}
+- 타임프레임: ${this.chartContext.intervalLabel}
 - 거래소: Binance (선물)
+${marketData}
 
-적용된 보조지표:
-- EMA 20 (cyan), EMA 50 (orange), EMA 200 (purple)
-- RSI (14)
-- 거래량 (Volume)
+위 실시간 데이터를 반드시 참조하여 구체적인 수치와 함께 분석해주세요.
+- 현재 EMA 배열 상태와 추세 판단
+- RSI 수치 기반 과매수/과매도 판단
+- 거래량 변화 의미
+- 구체적인 지지/저항 가격대
+- 진입/청산 포인트 제안
 
-분석 시 다음을 포함해주세요:
-1. 현재 추세 분석 (EMA 배열 기반)
-2. RSI 과매수/과매도 상태
-3. 거래량 분석
-4. 주요 지지/저항 레벨
-5. 매매 전략 제안
-
-답변은 한국어로 해주세요. 구체적인 수치와 함께 분석해주세요.
-마크다운 포맷을 사용하여 가독성 좋게 답변해주세요.
-
-⚠️ 중요: 이것은 투자 조언이 아닌 기술적 분석 의견임을 항상 명시해주세요.`;
+답변은 한국어로, 마크다운 포맷으로 작성해주세요.
+⚠️ 이것은 투자 조언이 아닌 기술적 분석 의견입니다.`;
   }
 
   async sendMessage(userText) {
@@ -52,26 +167,34 @@ class ChatManager {
     this.hideWelcome();
 
     this.isStreaming = true;
-    this.updateStatus('분석 중...', 'typing');
+    this.updateStatus('데이터 수집 중...', 'typing');
     this.updateSendButton();
     const typingEl = this.showTypingIndicator();
 
     const model = localStorage.getItem('tradeai_model') || 'gpt-5.5';
 
     try {
+      // 실시간 시장 데이터 수집
+      this.updateStatus('차트 데이터 분석 중...', 'typing');
+      const symbol = this.chartContext.symbol;
+      const interval = this.chartContext.interval;
+      const marketData = await MarketData.getAnalysisContext(symbol, interval);
+
+      this.updateStatus('AI 분석 중...', 'typing');
+
       const useNewParam = model.startsWith('gpt-5') || model.startsWith('o3') || model.startsWith('o4');
       const body = {
         model: model,
         messages: [
-          { role: 'system', content: this.getSystemPrompt() },
+          { role: 'system', content: this.getSystemPrompt(marketData) },
           ...this.messages
         ],
         stream: true,
       };
       if (useNewParam) {
-        body.max_completion_tokens = 2000;
+        body.max_completion_tokens = 4000;
       } else {
-        body.max_tokens = 2000;
+        body.max_tokens = 4000;
         body.temperature = 0.7;
       }
 
