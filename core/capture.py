@@ -14,6 +14,19 @@ import win32gui
 import win32con
 
 
+def _is_tradingview_window(title):
+    """TradingView 앱 창인지 판별"""
+    t = title.lower()
+    # TradingView 앱 타이틀 패턴: 'ETHUSDT.P ▲ 2,326.88 +0.47%' 형태
+    if re.search(r'[A-Z]{2,10}USDT', title, re.IGNORECASE):
+        return True
+    if 'tradingview' in t:
+        return True
+    if 'binance' in t and ('chart' in t or 'perpetual' in t):
+        return True
+    return False
+
+
 def find_tradingview_window():
     """TradingView 데스크탑 앱 창을 찾아 핸들 반환"""
     results = []
@@ -21,7 +34,7 @@ def find_tradingview_window():
     def callback(hwnd, _):
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd)
-            if title and "tradingview" in title.lower():
+            if title and _is_tradingview_window(title):
                 results.append((hwnd, title))
         return True
 
@@ -30,10 +43,18 @@ def find_tradingview_window():
     if not results:
         return None, None
 
-    # 가장 큰 창 선택 (메인 차트일 가능성 높음)
+    # 'tradingview-ai-chat' 같은 터미널/에디터 창 제외
+    exclude = ['antigravity', 'powershell', 'vscode', 'visual studio', 'extension:']
+    filtered = [(h, t) for h, t in results
+                if not any(ex in t.lower() for ex in exclude)]
+
+    if not filtered:
+        filtered = results
+
+    # 가장 큰 창 선택
     best = None
     best_area = 0
-    for hwnd, title in results:
+    for hwnd, title in filtered:
         rect = win32gui.GetWindowRect(hwnd)
         w = rect[2] - rect[0]
         h = rect[3] - rect[1]
@@ -153,8 +174,9 @@ def capture_tradingview():
         if w < 100 or h < 100:
             return None, "TradingView 창이 너무 작습니다."
 
-        # 화면에서 직접 해당 영역 캡쳐 (GPU 가속 앱도 정상)
-        img = pyautogui.screenshot(region=(x, y, w, h))
+        # 화면에서 직접 해당 영역 캡쳐 (멀티 모니터 지원)
+        from PIL import ImageGrab
+        img = ImageGrab.grab(bbox=(x, y, x2, y2), all_screens=True)
 
         return img, title
 
