@@ -134,23 +134,18 @@ class ChatManager {
   }
 
   getSystemPrompt(marketData) {
-    return `당신은 전문 암호화폐 트레이딩 분석가입니다. 아래 실시간 데이터를 기반으로 구체적인 기술적 분석을 제공합니다.
+    return `당신은 암호화폐 기술적 분석 전문가입니다. 사용자는 차트를 볼 줄 아는 트레이더입니다.
 
-현재 차트 정보:
-- 종목: ${this.chartContext.symbol}
-- 타임프레임: ${this.chartContext.intervalLabel}
-- 거래소: Binance (선물)
+규칙:
+- 원론적/교과서적 설명 금지 (EMA란 무엇인가, RSI란 등 설명 불필요)
+- 오직 아래 실시간 데이터 기반으로 구체적 수치와 판단만 제공
+- 간결하게 핵심만 답변
+- 질문에 해당하는 내용만 답변 (묻지 않은 것은 생략)
+
+종목: ${this.chartContext.symbol} | ${this.chartContext.intervalLabel} | Binance 선물
 ${marketData}
 
-위 실시간 데이터를 반드시 참조하여 구체적인 수치와 함께 분석해주세요.
-- 현재 EMA 배열 상태와 추세 판단
-- RSI 수치 기반 과매수/과매도 판단
-- 거래량 변화 의미
-- 구체적인 지지/저항 가격대
-- 진입/청산 포인트 제안
-
-답변은 한국어로, 마크다운 포맷으로 작성해주세요.
-⚠️ 이것은 투자 조언이 아닌 기술적 분석 의견입니다.`;
+⚠️ 투자 조언이 아닌 기술적 분석 의견입니다.`;
   }
 
   async sendMessage(userText) {
