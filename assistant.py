@@ -7,7 +7,7 @@ import json
 import copy
 from datetime import datetime
 from core.capture import capture_tradingview, image_to_base64, parse_window_title, detect_chart_info
-from core.market_data import get_market_context
+from core.market_data import get_market_context, get_multi_timeframe_context, parse_requested_timeframes
 from core.ai_client import analyze_chart, analyze_trade_summary
 from core.session_manager import (
     create_session, save_session, load_session, delete_session, list_sessions,
@@ -26,71 +26,92 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
+    /* ═══ 글로벌 ═══ */
     .stApp {
         font-family: 'Inter', sans-serif;
     }
 
-    /* 사이드바 */
+    /* ═══ 사이드바 — 웜톤 라이트 테마 ═══ */
     section[data-testid="stSidebar"] {
-        background: #1A1D23;
-        border-right: 1px solid #2D3139;
+        background: linear-gradient(180deg, #FFF9F0 0%, #FFF5E6 40%, #FFF0DB 100%) !important;
+        border-right: 1px solid #E8D5B8 !important;
     }
+    section[data-testid="stSidebar"] > div:first-child {
+        background: transparent !important;
+    }
+
+    /* 사이드바 텍스트 */
     section[data-testid="stSidebar"] .stMarkdown,
     section[data-testid="stSidebar"] .stMarkdown p,
     section[data-testid="stSidebar"] .stMarkdown span {
-        color: #C5C8D0 !important;
+        color: #6B5D4F !important;
     }
     section[data-testid="stSidebar"] .stMarkdown h3,
     section[data-testid="stSidebar"] .stMarkdown h4 {
-        color: #E8EAED !important;
+        color: #3D3425 !important;
+        letter-spacing: -0.3px;
     }
 
     /* 사이드바 버튼 */
     section[data-testid="stSidebar"] .stButton > button {
-        border-radius: 8px;
+        border-radius: 10px;
         font-weight: 500;
-        border: 1px solid #3D4149;
-        color: #E8EAED;
-        background: #2D3139;
-        transition: all 0.15s ease;
+        font-size: 13px;
+        border: 1px solid #D9C9AD;
+        color: #5D4E37;
+        background: rgba(255, 255, 255, 0.65);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 1px 3px rgba(139, 115, 85, 0.08);
     }
     section[data-testid="stSidebar"] .stButton > button:hover {
         border-color: #2962FF;
-        color: #ffffff;
-        background: #353B45;
+        color: #2962FF;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 4px 12px rgba(41, 98, 255, 0.12);
+        transform: translateY(-1px);
     }
 
     /* 새 거래 버튼 강조 */
     section[data-testid="stSidebar"] [data-testid="stButton"]:first-of-type > button {
-        background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%);
+        background: linear-gradient(135deg, #2962FF 0%, #448AFF 100%);
         border: none;
-        color: white;
+        color: white !important;
         font-weight: 600;
+        font-size: 14px;
+        box-shadow: 0 4px 14px rgba(41, 98, 255, 0.3);
+        letter-spacing: 0.2px;
     }
     section[data-testid="stSidebar"] [data-testid="stButton"]:first-of-type > button:hover {
-        background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%);
+        background: linear-gradient(135deg, #1E88E5 0%, #2962FF 100%);
+        box-shadow: 0 6px 20px rgba(41, 98, 255, 0.4);
+        transform: translateY(-2px);
+        color: white !important;
     }
 
     /* 세션 카드 */
     .session-card {
         padding: 10px 12px;
-        border-radius: 8px;
+        border-radius: 10px;
         margin: 4px 0;
         cursor: pointer;
-        transition: background 0.15s;
+        transition: all 0.2s ease;
         border: 1px solid transparent;
     }
     .session-card:hover {
-        background: #2D3139;
+        background: rgba(255, 255, 255, 0.6);
+        border-color: #E0D0B8;
     }
     .session-card.active {
-        background: #2D3139;
+        background: rgba(255, 255, 255, 0.7);
         border-color: #2962FF;
+        box-shadow: 0 2px 8px rgba(41, 98, 255, 0.1);
     }
     .session-title {
         font-size: 13px;
         font-weight: 500;
-        color: #E8EAED;
+        color: #3D3425;
         margin-bottom: 2px;
         white-space: nowrap;
         overflow: hidden;
@@ -98,42 +119,90 @@ st.markdown("""
     }
     .session-meta {
         font-size: 11px;
-        color: #8B8F97;
+        color: #9A8B78;
     }
-    .session-pnl-pos { color: #26A69A; font-weight: 600; }
-    .session-pnl-neg { color: #EF5350; font-weight: 600; }
+    .session-pnl-pos { color: #16A34A; font-weight: 600; }
+    .session-pnl-neg { color: #EF4444; font-weight: 600; }
 
     /* 히스토리 구분 */
     .history-label {
         font-size: 11px;
-        color: #6B7280;
+        color: #9A8B78;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
-        padding: 12px 0 6px 4px;
-        border-top: 1px solid #2D3139;
+        letter-spacing: 0.8px;
+        padding: 14px 0 6px 4px;
+        border-top: 1px solid #E0D0B8;
         margin-top: 8px;
     }
 
+    /* 사이드바 구분선 */
+    section[data-testid="stSidebar"] hr {
+        border-color: #E0D0B8 !important;
+    }
+
+    /* 사이드바 expander (설정) */
+    section[data-testid="stSidebar"] .streamlit-expanderHeader {
+        color: #6B5D4F !important;
+        font-size: 13px;
+        background: rgba(255, 255, 255, 0.4);
+        border-radius: 10px;
+        border: 1px solid #E0D0B8;
+    }
+    section[data-testid="stSidebar"] .streamlit-expanderContent {
+        background: rgba(255, 255, 255, 0.4);
+        border-radius: 0 0 10px 10px;
+        border: 1px solid #E0D0B8;
+        border-top: none;
+    }
+
+    /* 사이드바 입력 필드 */
+    section[data-testid="stSidebar"] .stTextInput > div > div > input,
+    section[data-testid="stSidebar"] .stSelectbox > div > div {
+        background: rgba(255, 255, 255, 0.7) !important;
+        border-color: #D9C9AD !important;
+        color: #3D3425 !important;
+        border-radius: 8px !important;
+    }
+    section[data-testid="stSidebar"] .stTextInput > div > div > input:focus {
+        border-color: #2962FF !important;
+        box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.15) !important;
+    }
+
+    /* 사이드바 체크박스 */
+    section[data-testid="stSidebar"] .stCheckbox label {
+        color: #6B5D4F !important;
+    }
+
+    /* ═══ 메인 영역 ═══ */
+
     /* 채팅 메시지 */
     .stChatMessage {
-        border-radius: 12px !important;
+        border-radius: 14px !important;
         border: 1px solid #E8DFC8 !important;
         background: #FFFEF8 !important;
+        box-shadow: 0 1px 4px rgba(139, 115, 85, 0.06);
+        transition: box-shadow 0.2s ease;
+    }
+    .stChatMessage:hover {
+        box-shadow: 0 2px 8px rgba(139, 115, 85, 0.1);
     }
 
     /* 메인 버튼 스타일 */
     .stButton > button {
-        border-radius: 8px;
+        border-radius: 10px;
         font-weight: 500;
         border: 1px solid #D4C9A8;
         color: #5D4E37;
-        transition: all 0.15s ease;
+        background: rgba(255, 255, 255, 0.7);
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .stButton > button:hover {
         border-color: #2962FF;
         color: #2962FF;
         background: #FFF8E7;
+        box-shadow: 0 3px 10px rgba(41, 98, 255, 0.1);
+        transform: translateY(-1px);
     }
 
     /* 포지션 종료 버튼 (빨간색) */
@@ -142,54 +211,95 @@ st.markdown("""
         border: none !important;
         color: white !important;
         font-weight: 600 !important;
+        box-shadow: 0 3px 12px rgba(239, 83, 80, 0.25) !important;
     }
     .close-position-btn > button:hover {
         background: linear-gradient(135deg, #E53935 0%, #C62828 100%) !important;
         color: white !important;
+        box-shadow: 0 5px 16px rgba(239, 83, 80, 0.35) !important;
+        transform: translateY(-1px);
     }
 
     /* 입력 필드 */
     .stTextInput > div > div > input,
     .stSelectbox > div > div {
-        border-radius: 8px !important;
+        border-radius: 10px !important;
         border: 1px solid #D4C9A8 !important;
         background: #FFFEF8 !important;
         color: #2D3436 !important;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #2962FF !important;
+        box-shadow: 0 0 0 3px rgba(41, 98, 255, 0.1) !important;
     }
 
-    /* 사이드바 입력 필드 */
-    section[data-testid="stSidebar"] .stTextInput > div > div > input,
-    section[data-testid="stSidebar"] .stSelectbox > div > div {
-        background: #2D3139 !important;
-        border-color: #3D4149 !important;
-        color: #E8EAED !important;
+    /* 채팅 입력 */
+    .stChatInput > div {
+        border-radius: 14px !important;
+        border: 1.5px solid #D4C9A8 !important;
+        background: #FFFEF8 !important;
+        box-shadow: 0 2px 8px rgba(139, 115, 85, 0.08);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .stChatInput > div:focus-within {
+        border-color: #2962FF !important;
+        box-shadow: 0 4px 16px rgba(41, 98, 255, 0.12) !important;
     }
 
     /* 캡쳐 이미지 */
     .stImage {
-        border-radius: 10px;
+        border-radius: 12px;
         overflow: hidden;
         border: 1px solid #E8DFC8;
+        box-shadow: 0 2px 8px rgba(139, 115, 85, 0.08);
     }
 
     /* 헤더 */
-    h2 { color: #3D3425; }
+    h2 {
+        color: #3D3425;
+        letter-spacing: -0.3px;
+    }
     hr { border-color: #E8DFC8 !important; }
 
     .stMarkdown code {
         background: #FFF3D6 !important;
         color: #5D4E37 !important;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.9em;
     }
 
     /* 읽기 전용 배너 */
     .readonly-banner {
-        background: #FFF3CD;
+        background: linear-gradient(135deg, #FFF8E1 0%, #FFF3CD 100%);
         border: 1px solid #F0D78C;
-        border-radius: 8px;
-        padding: 10px 16px;
+        border-radius: 10px;
+        padding: 12px 18px;
         margin-bottom: 16px;
         color: #856404;
         font-size: 14px;
+        box-shadow: 0 1px 4px rgba(240, 215, 140, 0.2);
+    }
+
+    /* 스피너 */
+    .stSpinner > div {
+        border-color: #2962FF transparent transparent transparent !important;
+    }
+
+    /* 스크롤바 (사이드바) */
+    section[data-testid="stSidebar"] ::-webkit-scrollbar {
+        width: 4px;
+    }
+    section[data-testid="stSidebar"] ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb {
+        background: #D4C9A8;
+        border-radius: 4px;
+    }
+    section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb:hover {
+        background: #BBA98A;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -261,24 +371,8 @@ def _deep_clean(obj):
 
 
 def _safe_save_session(session):
-    """세션을 안전하게 저장 (비직렬화 객체 완전 제거 후 저장)"""
-    clean = dict(session)
-    clean.pop("last_capture", None)
-    clean.pop("last_capture_b64", None)
-    clean_msgs = []
-    for msg in clean.get("messages", []):
-        m = {"role": msg.get("role", ""), "content": str(msg.get("content", ""))}
-        clean_msgs.append(m)
-    clean["messages"] = clean_msgs
-    clean = _deep_clean(clean)
-    save_session.__wrapped_clean__ = clean  # bypass
-    # 직접 저장
-    import os
-    sessions_dir = os.path.join(os.path.dirname(__file__), "sessions")
-    os.makedirs(sessions_dir, exist_ok=True)
-    path = os.path.join(sessions_dir, f"{clean['id']}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2)
+    """세션을 안전하게 저장 (Supabase + 로컬)"""
+    save_session(session)
 
 
 def _get_active_session():
@@ -305,16 +399,14 @@ def _get_tab_label(sess):
 
 
 def _format_time(iso_str):
-    """ISO 시간 문자열을 간단한 형식으로"""
+    """ISO 시간 문자열을 날짜+시간 형식으로"""
     try:
         dt = datetime.fromisoformat(iso_str)
         now = datetime.now()
-        if dt.date() == now.date():
-            return dt.strftime("%H:%M")
-        elif dt.year == now.year:
+        if dt.year == now.year:
             return dt.strftime("%m/%d %H:%M")
         else:
-            return dt.strftime("%Y/%m/%d")
+            return dt.strftime("%Y/%m/%d %H:%M")
     except Exception:
         return ""
 
@@ -581,31 +673,109 @@ with col_close:
             st.rerun()
 
 
+# 퀵 분석 프롬프트 → 짧은 표시 매핑
+_PROMPT_DISPLAY_MAP = {
+    "[종합 차트 분석]": "📊 종합 차트 분석",
+    "[매매 전략 수립]": "💡 매매 전략 분석",
+    "[지지/저항 & 매물대 분석]": "📐 지지/저항 & 매물대 분석",
+    "[추세 종합 판단]": "📈 추세 종합 판단",
+}
+
+def _shorten_prompt(content):
+    """퀵 분석 프롬프트를 짧은 라벨로 변환"""
+    for tag, label in _PROMPT_DISPLAY_MAP.items():
+        if content.strip().startswith(tag):
+            return label
+    return content
+
 # ── 이전 메시지 표시 ──
 for msg in sess.get("messages", []):
     with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
-        st.markdown(msg["content"])
+        display = _shorten_prompt(msg["content"]) if msg["role"] == "user" else msg["content"]
+        st.markdown(display)
         if msg.get("image"):
             st.image(msg["image"], caption="분석한 차트", use_container_width=True)
 
-# ── 빠른 분석 버튼 (새 대화일 때만) ──
-if not sess.get("messages"):
-    st.markdown("---")
-    cols = st.columns(4)
-    quick_items = [
-        ("📊 차트 분석", "현재 차트를 종합 분석해줘"),
-        ("💡 매매 전략", "지금 진입해도 될까? 매매 전략 제안해줘"),
-        ("📐 지지/저항", "차트에 보이는 주요 지지선과 저항선 분석해줘"),
-        ("📈 추세 판단", "현재 추세 방향과 강도를 판단해줘"),
-    ]
-    for i, (label, msg) in enumerate(quick_items):
-        with cols[i]:
-            if st.button(label, key=f"quick_{i}", use_container_width=True):
-                st.session_state._pending_msg = msg
-                st.rerun()
+# ── 빠른 분석 버튼 (항상 표시) ──
+st.markdown("---")
+cols = st.columns(4)
+
+# (버튼 라벨, 채팅 표시 텍스트, AI 전체 프롬프트)
+_QUICK_ITEMS = [
+    ("📊 차트 분석", "📊 종합 차트 분석", """[종합 차트 분석] 아래 모든 타임프레임의 실시간 데이터를 기반으로 종합 분석해줘.
+
+각 타임프레임(5분/15분/1시간/4시간/일봉/주봉)별로:
+1. EMA(20/50/200) 배열 상태와 가격 위치
+2. 볼린저밴드 위치 (상단/중단/하단 근접 여부, 밴드 수축/확장)
+3. MACD 시그널 (골든/데드크로스, 히스토그램 방향)
+4. RSI 상태 (과매수/과매도/다이버전스)
+5. 거래량 분석 (최근 평균 대비 현재 거래량이 터졌는지, 미미한지)
+6. 캔들 패턴/차트 형태 (쌍바닥, 헤드앤숄더, 삼각수렴, 웻지 등)
+
+종합:
+- 엘리엇 파동 관점: 현재 예측되는 파동 카운팅
+- 관점별 추세 정리: 스캘핑 / 데이트레이딩 / 스윙 / 장기 관점"""),
+
+    ("💡 매매 전략", "💡 매매 전략 분석", """[매매 전략 수립] 아래 모든 타임프레임의 실시간 데이터를 기반으로 매매 전략을 제안해줘.
+
+각 트레이딩 스타일별로 롱/숏 시나리오를 제시해줘:
+
+1. 스캘핑 (5분~15분 기준)
+   - 롱 시나리오: 진입가, 손절가, 목표가, 근거
+   - 숏 시나리오: 진입가, 손절가, 목표가, 근거
+
+2. 데이트레이딩 (1시간 기준)
+   - 롱/숏 시나리오 + 손익비
+
+3. 스윙 (4시간~일봉 기준)
+   - 롱/숏 시나리오 + 손익비
+
+4. 장기 (일봉~주봉 기준)
+   - 방향성 판단 + 주요 가격대
+
+각 시나리오에 구체적인 가격 수준과 근거를 포함해줘."""),
+
+    ("📐 지지/저항", "📐 지지/저항 & 매물대 분석", """[지지/저항 & 매물대 분석] 아래 모든 타임프레임의 실시간 데이터를 기반으로 주요 지지/저항 레벨을 분석해줘.
+
+각 타임프레임에서 파악되는:
+1. 주요 지지선 (가격대 + 근거)
+2. 주요 저항선 (가격대 + 근거)
+3. 매물대 (거래량이 집중된 가격 구간)
+4. EMA/볼린저밴드가 형성하는 동적 지지/저항
+
+최종 정리:
+- 강한 지지 구간 TOP 3
+- 강한 저항 구간 TOP 3
+- 현재가 기준 가장 가까운 지지/저항"""),
+
+    ("📈 추세 판단", "📈 추세 종합 판단", """[추세 종합 판단] 아래 모든 타임프레임의 실시간 데이터를 기반으로 현재 추세를 판단해줘.
+
+각 타임프레임(5분/15분/1시간/4시간/일봉/주봉)별로:
+1. EMA(20/50/200) 배열 상태와 가격 위치
+2. 볼린저밴드 위치 (상단/중단/하단 근접, 밴드 수축/확장)
+3. MACD 시그널 (골든/데드크로스, 히스토그램 방향)
+4. RSI 상태 (과매수/과매도/다이버전스)
+5. 거래량 (평균 대비 현재봉)
+6. 캔들/차트 형태
+
+종합:
+- 엘리엇 파동 카운팅 예측
+- 관점별 추세 정리: 스캘핑 / 데이트레이딩 / 스윙 / 장기
+- 현재 시장 구간: 추세(상승/하락) vs 횡보 vs 전환"""),
+]
+
+for i, (btn_label, display_label, full_prompt) in enumerate(_QUICK_ITEMS):
+    with cols[i]:
+        if st.button(btn_label, key=f"quick_{i}", use_container_width=True):
+            st.session_state._pending_msg = full_prompt
+            st.session_state._pending_display = display_label
+            st.session_state._pending_force_multi = True
+            st.rerun()
 
 # Pending 메시지 처리
 pending = st.session_state.pop("_pending_msg", None)
+pending_display = st.session_state.pop("_pending_display", None)
+force_multi = st.session_state.pop("_pending_force_multi", False)
 
 # ── 채팅 입력 ──
 user_input = st.chat_input("차트에 대해 질문하세요...")
@@ -640,16 +810,26 @@ if prompt:
             capture_b64 = sess["last_capture_b64"]
             capture_img = sess.get("last_capture")
 
-        # 사용자 메시지 추가
+        # 사용자 메시지 추가 — 퀵 분석은 짧은 라벨로 표시
+        display_text = pending_display if pending_display else prompt
         sess["messages"].append({"role": "user", "content": prompt})
         with st.chat_message("user", avatar="👤"):
-            st.markdown(prompt)
+            st.markdown(display_text)
 
         # 실시간 데이터 수집
         symbol = sess.get("symbol", "BTCUSDT")
-        interval = sess.get("interval", "1시간")
-        with st.spinner("📊 실시간 데이터 수집 중..."):
-            market_data = get_market_context(symbol, interval)
+        interval = sess.get("interval", "15분")
+
+        if force_multi:
+            # 퀵 분석 버튼 → 6개 타임프레임 강제 수집
+            requested_tfs = ["5분", "15분", "1시간", "4시간", "1일", "1주"]
+        else:
+            # 일반 채팅 → 현재 타임프레임 + 언급된 타임프레임만
+            requested_tfs = parse_requested_timeframes(prompt, interval)
+
+        tf_label = " / ".join(requested_tfs)
+        with st.spinner(f"📊 데이터 수집 중 ({tf_label})..."):
+            market_data = get_multi_timeframe_context(symbol, requested_tfs, interval)
 
         # AI 분석
         with st.chat_message("assistant", avatar="🤖"):
@@ -678,3 +858,5 @@ if prompt:
             "content": str(response) if response else "",
             "image": capture_img,
         })
+        _safe_save_session(sess)
+        st.rerun()

@@ -67,9 +67,9 @@ def analyze_chart(api_key, model, messages, image_base64=None, market_data=""):
         "stream": True,
     }
     if is_new:
-        kwargs["max_completion_tokens"] = 4000
+        kwargs["max_completion_tokens"] = 16000
     else:
-        kwargs["max_tokens"] = 4000
+        kwargs["max_tokens"] = 16000
         kwargs["temperature"] = 0.7
 
     stream = client.chat.completions.create(**kwargs)

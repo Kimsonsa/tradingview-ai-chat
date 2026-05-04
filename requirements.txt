@@ -3,6 +3,7 @@ openai>=1.30.0
 Pillow>=10.0.0
 requests>=2.31.0
 numpy>=1.24.0
+psycopg2-binary>=2.9.9
 
 # Windows 전용 (Linux에서는 자동 무시)
 pywin32>=306; sys_platform == "win32"

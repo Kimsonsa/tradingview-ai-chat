@@ -1,6 +1,7 @@
 node_modules/
 .env
 .DS_Store
+.streamlit/secrets.toml
 __pycache__/
 *.pyc
 .tradeai_config.json
