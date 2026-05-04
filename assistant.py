@@ -3,6 +3,8 @@ TradeAI Assistant — 트레이딩 세션 관리 + AI 분석 데스크탑 앱
 ChatGPT 스타일 사이드바: 새 대화 / 대화 목록 / 설정
 """
 import streamlit as st
+import json
+import copy
 from datetime import datetime
 from core.capture import capture_tradingview, image_to_base64, parse_window_title, detect_chart_info
 from core.market_data import get_market_context
@@ -242,6 +244,41 @@ if not st.session_state.tabs and st.session_state.viewing_history is None:
         pass
     st.session_state.tabs[new_sess["id"]] = new_sess
     st.session_state.active_tab = new_sess["id"]
+
+
+def _deep_clean(obj):
+    """재귀적으로 JSON 직렬화 불가능한 객체 제거 (PIL Image 등)"""
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _deep_clean(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_deep_clean(v) for v in obj]
+    # PIL Image, bytes, 기타 → None
+    return None
+
+
+def _safe_save_session(session):
+    """세션을 안전하게 저장 (비직렬화 객체 완전 제거 후 저장)"""
+    clean = dict(session)
+    clean.pop("last_capture", None)
+    clean.pop("last_capture_b64", None)
+    clean_msgs = []
+    for msg in clean.get("messages", []):
+        m = {"role": msg.get("role", ""), "content": str(msg.get("content", ""))}
+        clean_msgs.append(m)
+    clean["messages"] = clean_msgs
+    clean = _deep_clean(clean)
+    save_session.__wrapped_clean__ = clean  # bypass
+    # 직접 저장
+    import os
+    sessions_dir = os.path.join(os.path.dirname(__file__), "sessions")
+    os.makedirs(sessions_dir, exist_ok=True)
+    path = os.path.join(sessions_dir, f"{clean['id']}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2)
 
 
 def _get_active_session():
@@ -520,7 +557,7 @@ with col_close:
             sess["summary"] = summary
             if summary.get("symbol") and summary["symbol"] != "UNKNOWN":
                 sess["symbol"] = summary["symbol"]
-            save_session(sess)
+            _safe_save_session(sess)
 
             # 탭에서 제거
             tab_id = sess["id"]
@@ -638,6 +675,6 @@ if prompt:
 
         sess["messages"].append({
             "role": "assistant",
-            "content": response,
+            "content": str(response) if response else "",
             "image": capture_img,
         })

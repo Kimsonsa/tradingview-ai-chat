@@ -30,11 +30,24 @@ def create_session(symbol="", interval=""):
     }
 
 
+def _make_serializable(obj):
+    """재귀적으로 모든 값을 JSON 직렬화 가능한 타입으로 변환"""
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_serializable(v) for v in obj]
+    # 그 외 (PIL Image, bytes 등) → 제거
+    return None
+
+
 def save_session(session):
     """세션을 JSON 파일로 저장"""
     _ensure_dir()
     path = os.path.join(SESSIONS_DIR, f"{session['id']}.json")
-    # messages 안의 PIL Image 객체는 직렬화 불가 → 제거
     clean = _clean_for_save(session)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
@@ -43,13 +56,18 @@ def save_session(session):
 def _clean_for_save(session):
     """저장용으로 직렬화 불가능한 객체 제거"""
     clean = dict(session)
+    # 저장 불필요한 대용량/비직렬화 키 제거
+    clean.pop("last_capture", None)      # PIL Image
+    clean.pop("last_capture_b64", None)  # base64 문자열 (용량 큼)
+    # 메시지에서 image 키 제거
     clean_msgs = []
     for msg in clean.get("messages", []):
         m = dict(msg)
         m.pop("image", None)       # PIL Image 제거
         clean_msgs.append(m)
     clean["messages"] = clean_msgs
-    return clean
+    # 최종 안전장치: 재귀적으로 직렬화 불가 객체 제거
+    return _make_serializable(clean)
 
 
 def load_session(session_id):
