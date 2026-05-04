@@ -1,7 +1,9 @@
 streamlit>=1.45.0
 openai>=1.30.0
-pyautogui>=0.9.54
 Pillow>=10.0.0
 requests>=2.31.0
 numpy>=1.24.0
-pywin32>=306
+
+# Windows 전용 (Linux에서는 자동 무시)
+pywin32>=306; sys_platform == "win32"
+pyautogui>=0.9.54; sys_platform == "win32"

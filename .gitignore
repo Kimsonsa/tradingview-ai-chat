@@ -4,3 +4,6 @@ node_modules/
 __pycache__/
 *.pyc
 .tradeai_config.json
+venv/
+tradeai_icon.png
+TradeAI.sh

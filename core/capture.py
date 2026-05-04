@@ -1,80 +1,40 @@
-"""TradingView 창 자동 감지 및 캡쳐 모듈
-- GPU 가속 앱(Electron) 호환: 화면 직접 캡쳐 방식
-- SetForegroundWindow 제한 우회
-- 창 타이틀에서 종목/타임프레임 자동 감지
+"""TradingView 창 자동 감지 및 캡쳐 모듈 (Windows / Linux 크로스플랫폼)
+
+Windows: win32gui + PIL.ImageGrab
+Linux:   xdotool + scrot (subprocess)
 """
 import io
+import os
 import re
+import sys
 import time
 import base64
-import ctypes
-import pyautogui
+import subprocess
 from PIL import Image
 
-import win32gui
-import win32con
+# ─── OS 판별 ───
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 
-# 멀티모니터 DPI 스케일링 대응 — 모든 모니터에서 정확한 좌표 보장
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor DPI Aware
-except Exception:
+# ─── Windows 전용 초기화 ───
+if IS_WINDOWS:
+    import ctypes
+    import win32gui
+    import win32con
+
+    # 멀티모니터 DPI 스케일링 대응 — 모든 모니터에서 정확한 좌표 보장
     try:
-        ctypes.windll.user32.SetProcessDPIAware()  # System DPI Aware (fallback)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor DPI Aware
     except Exception:
-        pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # System DPI Aware (fallback)
+        except Exception:
+            pass
 
 
-def _is_tradingview_window(title):
-    """TradingView 앱 창인지 판별"""
-    t = title.lower()
-    # TradingView 앱 타이틀 패턴: 'ETHUSDT.P ▲ 2,326.88 +0.47%' 형태
-    if re.search(r'[A-Z]{2,10}USDT', title, re.IGNORECASE):
-        return True
-    if 'tradingview' in t:
-        return True
-    if 'binance' in t and ('chart' in t or 'perpetual' in t):
-        return True
-    return False
-
-
-def find_tradingview_window():
-    """TradingView 데스크탑 앱 창을 찾아 핸들 반환"""
-    results = []
-
-    def callback(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd)
-            if title and _is_tradingview_window(title):
-                results.append((hwnd, title))
-        return True
-
-    win32gui.EnumWindows(callback, None)
-
-    if not results:
-        return None, None
-
-    # 'tradingview-ai-chat' 같은 터미널/에디터 창 제외
-    exclude = ['antigravity', 'powershell', 'vscode', 'visual studio', 'extension:']
-    filtered = [(h, t) for h, t in results
-                if not any(ex in t.lower() for ex in exclude)]
-
-    if not filtered:
-        filtered = results
-
-    # 가장 큰 창 선택
-    best = None
-    best_area = 0
-    for hwnd, title in filtered:
-        rect = win32gui.GetWindowRect(hwnd)
-        w = rect[2] - rect[0]
-        h = rect[3] - rect[1]
-        area = w * h
-        if area > best_area and w > 200 and h > 200:
-            best = (hwnd, title)
-            best_area = area
-
-    return best
-
+# ═══════════════════════════════════════════════
+# 공통 상수 / 유틸
+# ═══════════════════════════════════════════════
 
 INTERVAL_PARSE_MAP = {
     '1': '1분', '3': '3분', '5': '5분', '15': '15분', '30': '30분',
@@ -88,6 +48,19 @@ BINANCE_INTERVAL_MAP = {
     '45분': '45m', '1시간': '1h', '2시간': '2h', '3시간': '3h',
     '4시간': '4h', '1일': '1d', '1주': '1w', '1개월': '1M',
 }
+
+
+def _is_tradingview_window(title):
+    """TradingView 앱 창인지 판별"""
+    t = title.lower()
+    # TradingView 앱 타이틀 패턴: 'ETHUSDT.P ▲ 2,326.88 +0.47%' 형태
+    if re.search(r'[A-Z]{2,10}USDT', title, re.IGNORECASE):
+        return True
+    if 'tradingview' in t:
+        return True
+    if 'binance' in t and ('chart' in t or 'perpetual' in t):
+        return True
+    return False
 
 
 def parse_window_title(title):
@@ -127,73 +100,6 @@ def parse_window_title(title):
     return symbol, interval_label
 
 
-def detect_chart_info():
-    """TradingView 창에서 현재 종목/타임프레임 정보만 가져오기 (캡쳐 없이)"""
-    result = find_tradingview_window()
-    if result is None or result[0] is None:
-        return None, None, None
-
-    hwnd, title = result
-    symbol, interval = parse_window_title(title)
-    return symbol, interval, title
-
-
-def _bring_to_front(hwnd):
-    """창을 최전면으로 (SetForegroundWindow 제한 우회)"""
-    try:
-        # 최소화 상태면 복원
-        if win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            time.sleep(0.3)
-
-        # Alt키 트릭으로 포그라운드 잠금 해제
-        import ctypes
-        ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)  # Alt down
-        ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)  # Alt up
-        time.sleep(0.05)
-
-        win32gui.SetForegroundWindow(hwnd)
-        time.sleep(0.4)
-        return True
-    except Exception:
-        # 실패해도 계속 진행 (side-by-side 배치면 캡쳐 가능)
-        time.sleep(0.2)
-        return False
-
-
-def capture_tradingview():
-    """TradingView 창을 자동으로 찾아 캡쳐.
-    반환: (image, window_title) 또는 (None, error_msg)
-    """
-    result = find_tradingview_window()
-    if result is None or result[0] is None:
-        return None, "TradingView 앱을 찾을 수 없습니다. TradingView 데스크탑 앱이 실행 중인지 확인하세요."
-
-    hwnd, title = result
-
-    try:
-        # 창을 최전면으로 시도 (실패해도 계속)
-        _bring_to_front(hwnd)
-
-        # 창 영역 가져오기
-        rect = win32gui.GetWindowRect(hwnd)
-        x, y, x2, y2 = rect
-        w = x2 - x
-        h = y2 - y
-
-        if w < 100 or h < 100:
-            return None, "TradingView 창이 너무 작습니다."
-
-        # 화면에서 직접 해당 영역 캡쳐 (멀티 모니터 지원)
-        from PIL import ImageGrab
-        img = ImageGrab.grab(bbox=(x, y, x2, y2), all_screens=True)
-
-        return img, title
-
-    except Exception as e:
-        return None, f"캡쳐 실패: {str(e)}"
-
-
 def image_to_base64(img, max_size=1600):
     """PIL Image를 base64 문자열로 변환 (JPEG 압축)"""
     # 리사이즈
@@ -214,3 +120,300 @@ def image_to_base64(img, max_size=1600):
     img.save(buffer, format="JPEG", quality=85, optimize=True)
     b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return b64, len(buffer.getvalue())
+
+
+# ═══════════════════════════════════════════════
+# Windows 구현
+# ═══════════════════════════════════════════════
+
+def _win_find_tradingview():
+    """[Windows] TradingView 데스크탑 앱 창을 찾아 핸들 반환"""
+    results = []
+
+    def callback(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd):
+            title = win32gui.GetWindowText(hwnd)
+            if title and _is_tradingview_window(title):
+                results.append((hwnd, title))
+        return True
+
+    win32gui.EnumWindows(callback, None)
+
+    if not results:
+        return None, None
+
+    # 터미널/에디터 창 제외
+    exclude = ['antigravity', 'powershell', 'vscode', 'visual studio', 'extension:']
+    filtered = [(h, t) for h, t in results
+                if not any(ex in t.lower() for ex in exclude)]
+
+    if not filtered:
+        filtered = results
+
+    # 가장 큰 창 선택
+    best = None
+    best_area = 0
+    for hwnd, title in filtered:
+        rect = win32gui.GetWindowRect(hwnd)
+        w = rect[2] - rect[0]
+        h = rect[3] - rect[1]
+        area = w * h
+        if area > best_area and w > 200 and h > 200:
+            best = (hwnd, title)
+            best_area = area
+
+    return best
+
+
+def _win_bring_to_front(hwnd):
+    """[Windows] 창을 최전면으로 (SetForegroundWindow 제한 우회)"""
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.3)
+
+        import ctypes
+        ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)   # Alt down
+        ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)   # Alt up
+        time.sleep(0.05)
+
+        win32gui.SetForegroundWindow(hwnd)
+        time.sleep(0.4)
+        return True
+    except Exception:
+        time.sleep(0.2)
+        return False
+
+
+def _win_capture():
+    """[Windows] TradingView 창 캡쳐"""
+    result = _win_find_tradingview()
+    if result is None or result[0] is None:
+        return None, "TradingView 앱을 찾을 수 없습니다. TradingView 데스크탑 앱이 실행 중인지 확인하세요."
+
+    hwnd, title = result
+
+    try:
+        _win_bring_to_front(hwnd)
+
+        rect = win32gui.GetWindowRect(hwnd)
+        x, y, x2, y2 = rect
+        w = x2 - x
+        h = y2 - y
+
+        if w < 100 or h < 100:
+            return None, "TradingView 창이 너무 작습니다."
+
+        from PIL import ImageGrab
+        img = ImageGrab.grab(bbox=(x, y, x2, y2), all_screens=True)
+
+        return img, title
+
+    except Exception as e:
+        return None, f"캡쳐 실패: {str(e)}"
+
+
+def _win_detect_chart_info():
+    """[Windows] TradingView 창에서 종목/타임프레임 정보만 가져오기"""
+    result = _win_find_tradingview()
+    if result is None or result[0] is None:
+        return None, None, None
+
+    hwnd, title = result
+    symbol, interval = parse_window_title(title)
+    return symbol, interval, title
+
+
+# ═══════════════════════════════════════════════
+# Linux 구현
+# ═══════════════════════════════════════════════
+
+def _linux_find_tradingview():
+    """[Linux] xdotool로 TradingView 창 찾기 → (window_id, title)"""
+    try:
+        # 모든 창 목록 가져오기
+        result = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", "--name", ""],
+            capture_output=True, text=True, timeout=5
+        )
+        window_ids = result.stdout.strip().split('\n')
+        window_ids = [wid for wid in window_ids if wid.strip()]
+    except FileNotFoundError:
+        return None, None, "xdotool이 설치되어 있지 않습니다. 'sudo apt install xdotool'로 설치하세요."
+    except Exception as e:
+        return None, None, f"창 검색 실패: {e}"
+
+    candidates = []
+    exclude = ['antigravity', 'code', 'vscode', 'terminal', 'extension:']
+
+    for wid in window_ids:
+        try:
+            name_result = subprocess.run(
+                ["xdotool", "getwindowname", wid],
+                capture_output=True, text=True, timeout=2
+            )
+            title = name_result.stdout.strip()
+            if title and _is_tradingview_window(title):
+                if not any(ex in title.lower() for ex in exclude):
+                    candidates.append((wid, title))
+        except Exception:
+            continue
+
+    if not candidates:
+        return None, None, "TradingView 앱을 찾을 수 없습니다. TradingView 데스크탑 앱이 실행 중인지 확인하세요."
+
+    # 가장 큰 창 선택
+    best = None
+    best_area = 0
+    for wid, title in candidates:
+        try:
+            geo_result = subprocess.run(
+                ["xdotool", "getwindowgeometry", "--shell", wid],
+                capture_output=True, text=True, timeout=2
+            )
+            geo = {}
+            for line in geo_result.stdout.strip().split('\n'):
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    geo[k] = int(v)
+            w = geo.get('WIDTH', 0)
+            h = geo.get('HEIGHT', 0)
+            area = w * h
+            if area > best_area and w > 200 and h > 200:
+                best = (wid, title, geo)
+                best_area = area
+        except Exception:
+            continue
+
+    if best is None:
+        return candidates[0][0], candidates[0][1], None
+
+    return best[0], best[1], best[2] if len(best) > 2 else None
+
+
+def _linux_bring_to_front(wid):
+    """[Linux] xdotool로 창을 최전면으로"""
+    try:
+        subprocess.run(["xdotool", "windowactivate", "--sync", wid],
+                       timeout=3, capture_output=True)
+        time.sleep(0.4)
+        return True
+    except Exception:
+        time.sleep(0.2)
+        return False
+
+
+def _linux_capture():
+    """[Linux] TradingView 창 캡쳐"""
+    wid, title, geo_or_err = _linux_find_tradingview()
+    if wid is None:
+        return None, geo_or_err or "TradingView 앱을 찾을 수 없습니다."
+
+    try:
+        # 창을 최전면으로
+        _linux_bring_to_front(wid)
+
+        # 창 위치/크기 가져오기 (최신)
+        geo_result = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", wid],
+            capture_output=True, text=True, timeout=2
+        )
+        geo = {}
+        for line in geo_result.stdout.strip().split('\n'):
+            if '=' in line:
+                k, v = line.split('=', 1)
+                geo[k] = int(v)
+
+        x = geo.get('X', 0)
+        y = geo.get('Y', 0)
+        w = geo.get('WIDTH', 0)
+        h = geo.get('HEIGHT', 0)
+
+        if w < 100 or h < 100:
+            return None, "TradingView 창이 너무 작습니다."
+
+        # scrot으로 특정 영역 캡쳐 (가장 안정적)
+        import tempfile
+        tmp_path = os.path.join(tempfile.gettempdir(), "tradeai_capture.png")
+        try:
+            # 방법 1: scrot -a (영역 지정)
+            subprocess.run(
+                ["scrot", "-a", f"{x},{y},{w},{h}", "-o", tmp_path],
+                timeout=5, capture_output=True, check=True
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            try:
+                # 방법 2: import (ImageMagick) - 창 ID로 직접 캡쳐
+                subprocess.run(
+                    ["import", "-window", wid, tmp_path],
+                    timeout=5, capture_output=True, check=True
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # 방법 3: PIL ImageGrab (X11 환경)
+                try:
+                    from PIL import ImageGrab
+                    img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+                    return img, title
+                except Exception:
+                    return None, "캡쳐 도구를 찾을 수 없습니다. 'sudo apt install scrot' 또는 'sudo apt install imagemagick'으로 설치하세요."
+
+        if os.path.exists(tmp_path):
+            img = Image.open(tmp_path)
+            img.load()  # 파일 핸들 해제
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            return img, title
+        else:
+            return None, "캡쳐 파일이 생성되지 않았습니다."
+
+    except Exception as e:
+        return None, f"캡쳐 실패: {str(e)}"
+
+
+def _linux_detect_chart_info():
+    """[Linux] TradingView 창에서 종목/타임프레임 정보만 가져오기"""
+    wid, title, _ = _linux_find_tradingview()
+    if wid is None:
+        return None, None, None
+
+    symbol, interval = parse_window_title(title)
+    return symbol, interval, title
+
+
+# ═══════════════════════════════════════════════
+# 공통 API (OS 자동 분기)
+# ═══════════════════════════════════════════════
+
+def find_tradingview_window():
+    """TradingView 데스크탑 앱 창 찾기 (크로스플랫폼)"""
+    if IS_WINDOWS:
+        return _win_find_tradingview()
+    elif IS_LINUX:
+        wid, title, _ = _linux_find_tradingview()
+        return (wid, title) if wid else (None, None)
+    else:
+        return None, None
+
+
+def detect_chart_info():
+    """TradingView 창에서 현재 종목/타임프레임 정보만 가져오기 (캡쳐 없이)"""
+    if IS_WINDOWS:
+        return _win_detect_chart_info()
+    elif IS_LINUX:
+        return _linux_detect_chart_info()
+    else:
+        return None, None, None
+
+
+def capture_tradingview():
+    """TradingView 창을 자동으로 찾아 캡쳐 (크로스플랫폼)
+    반환: (image, window_title) 또는 (None, error_msg)
+    """
+    if IS_WINDOWS:
+        return _win_capture()
+    elif IS_LINUX:
+        return _linux_capture()
+    else:
+        return None, f"지원하지 않는 OS: {sys.platform}"
