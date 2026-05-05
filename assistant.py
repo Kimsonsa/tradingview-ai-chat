@@ -840,6 +840,53 @@ with cols[4]:
                 st.toast(f"⚠️ {title}")
         st.rerun()
 
+# ── 하단 포지션 종료 버튼 ──
+st.markdown('<div class="close-position-btn">', unsafe_allow_html=True)
+if st.button("📤 포지션 종료", key="close_position_bottom", use_container_width=True):
+    if sess.get("messages"):
+        with st.spinner("🤖 거래 분석 중..."):
+            try:
+                summary = analyze_trade_summary(
+                    api_key=st.session_state.api_key,
+                    model=st.session_state.model,
+                    messages=sess["messages"],
+                )
+            except Exception as e:
+                summary = {
+                    "symbol": sess.get("symbol", "UNKNOWN"),
+                    "direction": "UNKNOWN", "result": "미확정",
+                    "entry_price": None, "exit_price": None, "pnl_percent": None,
+                    "actions": [], "title": "분석 실패", "note": str(e),
+                }
+
+        # 세션 종료 처리
+        sess["status"] = "closed"
+        sess["closed_at"] = datetime.now().isoformat()
+        sess["summary"] = summary
+        if summary.get("symbol") and summary["symbol"] != "UNKNOWN":
+            sess["symbol"] = summary["symbol"]
+        _safe_save_session(sess)
+
+        # 탭에서 제거
+        tab_id = sess["id"]
+        del st.session_state.tabs[tab_id]
+
+        if st.session_state.tabs:
+            st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
+        else:
+            st.session_state.active_tab = None
+
+        st.rerun()
+    else:
+        tab_id = sess["id"]
+        del st.session_state.tabs[tab_id]
+        if st.session_state.tabs:
+            st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
+        else:
+            st.session_state.active_tab = None
+        st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
+
 # Pending 메시지 처리
 pending = st.session_state.pop("_pending_msg", None)
 pending_display = st.session_state.pop("_pending_display", None)
