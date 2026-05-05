@@ -331,6 +331,8 @@ if "model" not in st.session_state:
     st.session_state.model = _config.get("model", "gpt-5.5")
 if "auto_capture" not in st.session_state:
     st.session_state.auto_capture = True
+if "pending_captures" not in st.session_state:
+    st.session_state.pending_captures = []  # [(img, b64, label), ...]
 
 # 다중 탭: tabs = { tab_id: { session_data } }
 if "tabs" not in st.session_state:
@@ -340,20 +342,35 @@ if "active_tab" not in st.session_state:
 if "viewing_history" not in st.session_state:
     st.session_state.viewing_history = None  # 히스토리 열람 중인 session_id
 
-# 시작 시 탭이 없으면 자동으로 하나 생성
+# 시작 시 탭이 없으면 → 기존 active 세션 복원 시도, 없으면 새로 생성
 if not st.session_state.tabs and st.session_state.viewing_history is None:
-    new_sess = create_session()
-    # TradingView에서 종목 감지 시도
+    # DB/로컬에서 active 상태 세션 복원
+    _restored = False
     try:
-        _sym, _tf, _ = detect_chart_info()
-        if _sym:
-            new_sess["symbol"] = _sym
-        if _tf:
-            new_sess["interval"] = _tf
+        all_sessions = list_sessions()
+        for s_info in all_sessions:
+            if s_info.get("status") == "active" and s_info.get("msg_count", 0) > 0:
+                full_sess = load_session(s_info["id"])
+                if full_sess and full_sess.get("messages"):
+                    st.session_state.tabs[full_sess["id"]] = full_sess
+                    if not st.session_state.active_tab:
+                        st.session_state.active_tab = full_sess["id"]
+                    _restored = True
     except Exception:
         pass
-    st.session_state.tabs[new_sess["id"]] = new_sess
-    st.session_state.active_tab = new_sess["id"]
+
+    if not _restored:
+        new_sess = create_session()
+        try:
+            _sym, _tf, _ = detect_chart_info()
+            if _sym:
+                new_sess["symbol"] = _sym
+            if _tf:
+                new_sess["interval"] = _tf
+        except Exception:
+            pass
+        st.session_state.tabs[new_sess["id"]] = new_sess
+        st.session_state.active_tab = new_sess["id"]
 
 
 def _deep_clean(obj):
@@ -436,15 +453,27 @@ with st.sidebar:
     # ── 활성 탭 목록 ──
     if st.session_state.tabs:
         st.markdown('<div class="history-label">📊 진행 중</div>', unsafe_allow_html=True)
-        for tab_id, sess in list(st.session_state.tabs.items()):
-            label = _get_tab_label(sess)
+        for tab_id, sess_item in list(st.session_state.tabs.items()):
+            label = _get_tab_label(sess_item)
             is_active = (tab_id == st.session_state.active_tab and
                          st.session_state.viewing_history is None)
             prefix = "▸ " if is_active else "  "
-            if st.button(f"{prefix}{label}", key=f"tab_{tab_id}", use_container_width=True):
-                st.session_state.active_tab = tab_id
-                st.session_state.viewing_history = None
-                st.rerun()
+            sb_col1, sb_col2 = st.columns([5, 1])
+            with sb_col1:
+                if st.button(f"{prefix}{label}", key=f"tab_{tab_id}", use_container_width=True):
+                    st.session_state.active_tab = tab_id
+                    st.session_state.viewing_history = None
+                    st.rerun()
+            with sb_col2:
+                if st.button("✕", key=f"del_{tab_id}"):
+                    delete_session(tab_id)
+                    del st.session_state.tabs[tab_id]
+                    if st.session_state.active_tab == tab_id:
+                        if st.session_state.tabs:
+                            st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
+                        else:
+                            st.session_state.active_tab = None
+                    st.rerun()
 
     # ── 거래 히스토리 ──
     history = list_sessions()
@@ -598,31 +627,12 @@ if not sess.get("symbol"):
         pass
 
 # ── 헤더 ──
-col_title, col_capture, col_close = st.columns([5, 1, 1])
+col_title, col_close, col_delete = st.columns([6, 1, 1])
 with col_title:
     sym_display = sess.get("symbol") or "종목 감지 중..."
     intv_display = sess.get("interval") or ""
     st.markdown(f"## ◈ {sym_display} {intv_display}")
     st.caption(f"모델: {st.session_state.model} · 세션: {_format_time(sess.get('created_at', ''))}")
-
-with col_capture:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("📸 캡쳐", key="manual_capture", use_container_width=True):
-        with st.spinner("캡쳐 중..."):
-            img, title = capture_tradingview()
-            if img:
-                b64, size = image_to_base64(img)
-                sess["last_capture"] = img
-                sess["last_capture_b64"] = b64
-                sym, tf = parse_window_title(title)
-                if sym:
-                    sess["symbol"] = sym
-                if tf:
-                    sess["interval"] = tf
-                st.success(f"✅ {size // 1024}KB")
-                st.rerun()
-            else:
-                st.error(title)
 
 with col_close:
     st.markdown("<br>", unsafe_allow_html=True)
@@ -672,6 +682,18 @@ with col_close:
                 st.session_state.active_tab = None
             st.rerun()
 
+with col_delete:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🗑 삭제", key="delete_current", use_container_width=True):
+        tab_id = sess["id"]
+        delete_session(tab_id)
+        del st.session_state.tabs[tab_id]
+        if st.session_state.tabs:
+            st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
+        else:
+            st.session_state.active_tab = None
+        st.rerun()
+
 
 # 퀵 분석 프롬프트 → 짧은 표시 매핑
 _PROMPT_DISPLAY_MAP = {
@@ -696,9 +718,23 @@ for msg in sess.get("messages", []):
         if msg.get("image"):
             st.image(msg["image"], caption="분석한 차트", use_container_width=True)
 
+# ── 첨부된 캡쳐 미리보기 ──
+if st.session_state.pending_captures:
+    st.markdown(f"**📎 첨부된 캡쳐 ({len(st.session_state.pending_captures)}장)**")
+    cap_cols = st.columns(min(len(st.session_state.pending_captures), 4))
+    remove_idx = None
+    for ci, (cap_img, cap_b64, cap_label) in enumerate(st.session_state.pending_captures):
+        with cap_cols[ci % len(cap_cols)]:
+            st.image(cap_img, caption=cap_label, use_container_width=True)
+            if st.button("✕ 삭제", key=f"rm_cap_{ci}"):
+                remove_idx = ci
+    if remove_idx is not None:
+        st.session_state.pending_captures.pop(remove_idx)
+        st.rerun()
+
 # ── 빠른 분석 버튼 (항상 표시) ──
 st.markdown("---")
-cols = st.columns(4)
+cols = st.columns(5)
 
 # (버튼 라벨, 채팅 표시 텍스트, AI 전체 프롬프트)
 _QUICK_ITEMS = [
@@ -772,6 +808,27 @@ for i, (btn_label, display_label, full_prompt) in enumerate(_QUICK_ITEMS):
             st.session_state._pending_force_multi = True
             st.rerun()
 
+with cols[4]:
+    cap_count = len(st.session_state.pending_captures)
+    cap_label = f"📸 캡쳐 ({cap_count})" if cap_count else "📸 캡쳐"
+    if st.button(cap_label, key="quick_capture", use_container_width=True):
+        with st.spinner("캡쳐 중..."):
+            img, title = capture_tradingview()
+            if img:
+                b64, size = image_to_base64(img)
+                sess["last_capture"] = img
+                sess["last_capture_b64"] = b64
+                sym, tf = parse_window_title(title)
+                if sym:
+                    sess["symbol"] = sym
+                if tf:
+                    sess["interval"] = tf
+                label = f"{sym or '차트'} {tf or ''} ({size // 1024}KB)"
+                st.session_state.pending_captures.append((img, b64, label))
+            else:
+                st.toast(f"⚠️ {title}")
+        st.rerun()
+
 # Pending 메시지 처리
 pending = st.session_state.pop("_pending_msg", None)
 pending_display = st.session_state.pop("_pending_display", None)
@@ -785,57 +842,65 @@ if prompt:
     if not st.session_state.api_key:
         st.warning("🔑 사이드바 설정에서 OpenAI API 키를 먼저 입력하세요.")
     else:
-        # 자동 캡쳐
-        capture_b64 = None
-        capture_img = None
-        capture_size = 0
-        if st.session_state.auto_capture:
+        # 이미지 수집: pending_captures 우선, 없으면 자동 캡쳐
+        all_images = []  # [(img, b64, label), ...]
+
+        if st.session_state.pending_captures:
+            all_images = list(st.session_state.pending_captures)
+            st.session_state.pending_captures = []
+        else:
+            # 수동 캡쳐가 없으면 자동으로 현재 차트 캡쳐
             with st.spinner("📸 TradingView 캡쳐 중..."):
                 img, title = capture_tradingview()
                 if img:
                     b64, size = image_to_base64(img)
                     sess["last_capture"] = img
                     sess["last_capture_b64"] = b64
-                    capture_b64 = b64
-                    capture_img = img
-                    capture_size = size
                     sym, tf = parse_window_title(title)
                     if sym:
                         sess["symbol"] = sym
                     if tf:
                         sess["interval"] = tf
+                    label = f"{sym or '차트'} {tf or ''} ({size // 1024}KB)"
+                    all_images.append((img, b64, label))
                 else:
                     st.warning(f"⚠️ 캡쳐 실패: {title}")
-        elif sess.get("last_capture_b64"):
-            capture_b64 = sess["last_capture_b64"]
-            capture_img = sess.get("last_capture")
 
         # 사용자 메시지 추가 — 퀵 분석은 짧은 라벨로 표시
         display_text = pending_display if pending_display else prompt
         sess["messages"].append({"role": "user", "content": prompt})
         with st.chat_message("user", avatar="👤"):
             st.markdown(display_text)
+            if all_images:
+                img_cols = st.columns(min(len(all_images), 3))
+                for ii, (cap_img, _, cap_label) in enumerate(all_images):
+                    with img_cols[ii % len(img_cols)]:
+                        st.image(cap_img, caption=cap_label, use_container_width=True)
 
         # 실시간 데이터 수집
         symbol = sess.get("symbol", "BTCUSDT")
         interval = sess.get("interval", "15분")
 
         if force_multi:
-            # 퀵 분석 버튼 → 6개 타임프레임 강제 수집
             requested_tfs = ["5분", "15분", "1시간", "4시간", "1일", "1주"]
         else:
-            # 일반 채팅 → 현재 타임프레임 + 언급된 타임프레임만
             requested_tfs = parse_requested_timeframes(prompt, interval)
 
         tf_label = " / ".join(requested_tfs)
         with st.spinner(f"📊 데이터 수집 중 ({tf_label})..."):
             market_data = get_multi_timeframe_context(symbol, requested_tfs, interval)
 
+        # AI에 보낼 이미지 (첫 번째 이미지 또는 없음)
+        primary_b64 = all_images[0][1] if all_images else None
+        primary_img = all_images[0][0] if all_images else None
+
+        # 추가 이미지들의 b64 리스트
+        extra_b64_list = [b64 for _, b64, _ in all_images[1:]] if len(all_images) > 1 else []
+
         # AI 분석
         with st.chat_message("assistant", avatar="🤖"):
-            if capture_img:
-                st.image(capture_img, caption="📸 분석 중인 차트", use_container_width=True)
-                st.caption(f"✅ 이미지 첨부됨 ({capture_size // 1024}KB) — {st.session_state.model}")
+            if all_images:
+                st.caption(f"✅ {len(all_images)}장 이미지 첨부됨 — {st.session_state.model}")
             else:
                 st.caption("⚠️ 차트 이미지 없이 데이터만으로 분석합니다")
 
@@ -845,8 +910,9 @@ if prompt:
                         api_key=st.session_state.api_key,
                         model=st.session_state.model,
                         messages=sess["messages"],
-                        image_base64=capture_b64,
+                        image_base64=primary_b64,
                         market_data=market_data,
+                        extra_images=extra_b64_list,
                     )
                 )
             except Exception as e:
@@ -856,7 +922,7 @@ if prompt:
         sess["messages"].append({
             "role": "assistant",
             "content": str(response) if response else "",
-            "image": capture_img,
+            "image": primary_img,
         })
         _safe_save_session(sess)
         st.rerun()

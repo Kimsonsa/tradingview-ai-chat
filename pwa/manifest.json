@@ -1,0 +1,27 @@
+{
+  "name": "TradeAI Assistant",
+  "short_name": "TradeAI",
+  "description": "AI 트레이딩 어시스턴트 - 실시간 차트 분석",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFFF0",
+  "theme_color": "#FFFFF0",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "productivity"],
+  "lang": "ko",
+  "dir": "ltr"
+}
