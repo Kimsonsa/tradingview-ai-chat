@@ -301,6 +301,18 @@ st.markdown("""
     section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb:hover {
         background: #BBA98A;
     }
+    /* 자동캡쳐 체크박스 (채팅 입력 위) */
+    [data-testid="stMain"] > div > div > div > div > .stCheckbox {
+        margin-bottom: -8px;
+    }
+    [data-testid="stMain"] > div > div > div > div > .stCheckbox label {
+        font-size: 12px !important;
+        color: #9A8B78 !important;
+        font-weight: 400;
+    }
+    [data-testid="stMain"] > div > div > div > div > .stCheckbox label span {
+        font-size: 12px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -330,7 +342,7 @@ if "api_key" not in st.session_state:
 if "model" not in st.session_state:
     st.session_state.model = _config.get("model", "gpt-5.5")
 if "auto_capture" not in st.session_state:
-    st.session_state.auto_capture = True
+    st.session_state.auto_capture = False
 if "pending_captures" not in st.session_state:
     st.session_state.pending_captures = []  # [(img, b64, label), ...]
 
@@ -535,9 +547,6 @@ with st.sidebar:
             st.session_state.model = model
             save_config({"api_key": st.session_state.api_key, "model": model})
 
-        st.session_state.auto_capture = st.checkbox(
-            "질문 시 자동 캡쳐", value=st.session_state.auto_capture)
-
 
 # ═══════════════════════════════════════════════
 # 메인 영역
@@ -723,7 +732,9 @@ if st.session_state.pending_captures:
     st.markdown(f"**📎 첨부된 캡쳐 ({len(st.session_state.pending_captures)}장)**")
     cap_cols = st.columns(min(len(st.session_state.pending_captures), 4))
     remove_idx = None
-    for ci, (cap_img, cap_b64, cap_label) in enumerate(st.session_state.pending_captures):
+    for ci, item in enumerate(st.session_state.pending_captures):
+        cap_img = item[0]
+        cap_label = item[2]
         with cap_cols[ci % len(cap_cols)]:
             st.image(cap_img, caption=cap_label, use_container_width=True)
             if st.button("✕ 삭제", key=f"rm_cap_{ci}"):
@@ -824,7 +835,7 @@ with cols[4]:
                 if tf:
                     sess["interval"] = tf
                 label = f"{sym or '차트'} {tf or ''} ({size // 1024}KB)"
-                st.session_state.pending_captures.append((img, b64, label))
+                st.session_state.pending_captures.append((img, b64, label, tf or ''))
             else:
                 st.toast(f"⚠️ {title}")
         st.rerun()
@@ -834,7 +845,10 @@ pending = st.session_state.pop("_pending_msg", None)
 pending_display = st.session_state.pop("_pending_display", None)
 force_multi = st.session_state.pop("_pending_force_multi", False)
 
-# ── 채팅 입력 ──
+# ── 채팅 입력 (자동 캡쳐 체크박스 + 입력) ──
+st.session_state.auto_capture = st.checkbox(
+    "📸 자동캡쳐 — 질문 시 현재 TradingView 차트를 자동으로 캡쳐합니다",
+    value=st.session_state.auto_capture, key="auto_capture_cb")
 user_input = st.chat_input("차트에 대해 질문하세요...")
 prompt = pending or user_input
 
@@ -842,14 +856,14 @@ if prompt:
     if not st.session_state.api_key:
         st.warning("🔑 사이드바 설정에서 OpenAI API 키를 먼저 입력하세요.")
     else:
-        # 이미지 수집: pending_captures 우선, 없으면 자동 캡쳐
+        # 이미지 수집: pending_captures 우선, 자동캡쳐 체크 시 캡쳐, 아니면 이미지 없이 진행
         all_images = []  # [(img, b64, label), ...]
 
         if st.session_state.pending_captures:
             all_images = list(st.session_state.pending_captures)
             st.session_state.pending_captures = []
-        else:
-            # 수동 캡쳐가 없으면 자동으로 현재 차트 캡쳐
+        elif st.session_state.auto_capture:
+            # 자동 캡쳐 체크박스가 켜져 있을 때만 자동으로 현재 차트 캡쳐
             with st.spinner("📸 TradingView 캡쳐 중..."):
                 img, title = capture_tradingview()
                 if img:
@@ -862,7 +876,7 @@ if prompt:
                     if tf:
                         sess["interval"] = tf
                     label = f"{sym or '차트'} {tf or ''} ({size // 1024}KB)"
-                    all_images.append((img, b64, label))
+                    all_images.append((img, b64, label, tf or ''))
                 else:
                     st.warning(f"⚠️ 캡쳐 실패: {title}")
 
@@ -873,7 +887,9 @@ if prompt:
             st.markdown(display_text)
             if all_images:
                 img_cols = st.columns(min(len(all_images), 3))
-                for ii, (cap_img, _, cap_label) in enumerate(all_images):
+                for ii, item in enumerate(all_images):
+                    cap_img = item[0]
+                    cap_label = item[2]
                     with img_cols[ii % len(img_cols)]:
                         st.image(cap_img, caption=cap_label, use_container_width=True)
 
@@ -882,9 +898,26 @@ if prompt:
         interval = sess.get("interval", "15분")
 
         if force_multi:
-            requested_tfs = ["5분", "15분", "1시간", "4시간", "1일", "1주"]
+            requested_tfs = ["5분", "15분", "1시간", "4시간", "1일"]
         else:
             requested_tfs = parse_requested_timeframes(prompt, interval)
+
+        # 캡쳐된 이미지들의 타임프레임도 데이터 수집에 포함
+        if all_images:
+            from core.market_data import INTERVAL_MAP
+            detected_any = False
+            for item in all_images:
+                cap_tf = item[3] if len(item) > 3 else ''
+                if cap_tf and cap_tf in INTERVAL_MAP:
+                    detected_any = True
+                    if cap_tf not in requested_tfs:
+                        requested_tfs.append(cap_tf)
+            # 타임프레임 감지 실패 시 (TradingView 타이틀에 tf 없음) → 주요 타임프레임 수집
+            if not detected_any and len(all_images) >= 2:
+                requested_tfs = ["5분", "15분", "1시간", "4시간", "1일"]
+            # 정렬: 작은 타임프레임 → 큰 타임프레임
+            tf_order = ["1분", "3분", "5분", "15분", "30분", "1시간", "2시간", "4시간", "1일", "1주", "1개월"]
+            requested_tfs = [tf for tf in tf_order if tf in requested_tfs]
 
         tf_label = " / ".join(requested_tfs)
         with st.spinner(f"📊 데이터 수집 중 ({tf_label})..."):
@@ -895,7 +928,7 @@ if prompt:
         primary_img = all_images[0][0] if all_images else None
 
         # 추가 이미지들의 b64 리스트
-        extra_b64_list = [b64 for _, b64, _ in all_images[1:]] if len(all_images) > 1 else []
+        extra_b64_list = [item[1] for item in all_images[1:]] if len(all_images) > 1 else []
 
         # AI 분석
         with st.chat_message("assistant", avatar="🤖"):

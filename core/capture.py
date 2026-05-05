@@ -73,15 +73,15 @@ def parse_window_title(title):
     if sym_match:
         symbol = sym_match.group(1)
 
-    # 타임프레임 추출: 쉼표 구분 형식
-    parts = [p.strip() for p in title.split(',')]
+    # 타임프레임 추출: 다양한 구분자로 분리 (·, —, -, |, ,)
+    parts = re.split(r'[·\—\-\|,]', title)
     for part in parts:
         clean = part.strip()
         if clean in INTERVAL_PARSE_MAP:
             interval_label = INTERVAL_PARSE_MAP[clean]
             break
 
-    # 타임프레임: · 구분 형식
+    # 폴백: 패턴 매칭 (15m, 4h, 1D 등)
     if not interval_label:
         tf_match = re.search(r'(\d+[mhDWM]|\d+분|\d+시간|\d+일)', title)
         if tf_match:
