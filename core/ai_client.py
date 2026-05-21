@@ -98,15 +98,24 @@ def analyze_chart(api_key, model, messages, image_base64=None, market_data="", e
 
     api_messages = [{"role": "system", "content": system_msg}]
 
-    # 이전 대화 내역 추가
-    for msg in messages[:-1]:
+    # 이전 대화 내역 추가 (최근 20개만 — 토큰 초과 방지)
+    recent_messages = messages[:-1]
+    if len(recent_messages) > 20:
+        recent_messages = recent_messages[-20:]
+    for msg in recent_messages:
         api_messages.append({"role": msg["role"], "content": msg["content"]})
 
     # 마지막 메시지 (이미지 포함 가능)
     last_msg = messages[-1]
+    last_text = last_msg["content"]
+
+    # 실시간 데이터를 사용자 메시지에도 포함 (AI가 시스템 프롬프트를 무시하는 것 방지)
+    if market_data and not system_prompt_override:
+        last_text = last_text + f"\n\n{market_data}"
+
     if image_base64:
         content_parts = [
-            {"type": "text", "text": last_msg["content"]},
+            {"type": "text", "text": last_text},
             {
                 "type": "image_url",
                 "image_url": {
@@ -127,7 +136,7 @@ def analyze_chart(api_key, model, messages, image_base64=None, market_data="", e
                 })
         api_messages.append({"role": "user", "content": content_parts})
     else:
-        api_messages.append({"role": "user", "content": last_msg["content"]})
+        api_messages.append({"role": "user", "content": last_text})
 
     # 모델별 파라미터 조정
     is_new = model.startswith("gpt-5") or model.startswith("o3") or model.startswith("o4")
