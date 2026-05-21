@@ -9,6 +9,11 @@ from datetime import datetime
 from core.capture import capture_tradingview, image_to_base64, parse_window_title, detect_chart_info
 from core.market_data import get_market_context, get_multi_timeframe_context, parse_requested_timeframes
 from core.ai_client import analyze_chart, analyze_trade_summary
+from core.rsi_wave import (
+    analyze_rsi_wave, generate_wave_svg, generate_tf_cards,
+    generate_summary_text, format_rsi_wave_for_ai,
+    RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
+)
 from core.session_manager import (
     create_session, save_session, load_session, delete_session, list_sessions,
 )
@@ -608,6 +613,8 @@ if st.session_state.viewing_history:
         # 대화 내용 표시
         for msg in hist_data.get("messages", []):
             with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
+                if msg.get("rsi_wave_html"):
+                    st.markdown(msg["rsi_wave_html"], unsafe_allow_html=True)
                 st.markdown(msg["content"])
 
     else:
@@ -722,6 +729,8 @@ def _shorten_prompt(content):
 # ── 이전 메시지 표시 ──
 for msg in sess.get("messages", []):
     with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
+        if msg.get("rsi_wave_html"):
+            st.markdown(msg["rsi_wave_html"], unsafe_allow_html=True)
         display = _shorten_prompt(msg["content"]) if msg["role"] == "user" else msg["content"]
         st.markdown(display)
         if msg.get("image"):
@@ -745,43 +754,10 @@ if st.session_state.pending_captures:
 
 # ── 빠른 분석 버튼 (항상 표시) ──
 st.markdown("---")
-cols = st.columns(5)
+cols = st.columns(3)
 
 # (버튼 라벨, 채팅 표시 텍스트, AI 전체 프롬프트)
 _QUICK_ITEMS = [
-    ("📊 차트 분석", "📊 종합 차트 분석", """[종합 차트 분석] 아래 모든 타임프레임의 실시간 데이터를 기반으로 종합 분석해줘.
-
-각 타임프레임(5분/15분/1시간/4시간/일봉/주봉)별로:
-1. EMA(20/50/200) 배열 상태와 가격 위치
-2. 볼린저밴드 위치 (상단/중단/하단 근접 여부, 밴드 수축/확장)
-3. MACD 시그널 (골든/데드크로스, 히스토그램 방향)
-4. RSI 상태 (과매수/과매도/다이버전스)
-5. 거래량 분석 (최근 평균 대비 현재 거래량이 터졌는지, 미미한지)
-6. 캔들 패턴/차트 형태 (쌍바닥, 헤드앤숄더, 삼각수렴, 웻지 등)
-
-종합:
-- 엘리엇 파동 관점: 현재 예측되는 파동 카운팅
-- 관점별 추세 정리: 스캘핑 / 데이트레이딩 / 스윙 / 장기 관점"""),
-
-    ("💡 매매 전략", "💡 매매 전략 분석", """[매매 전략 수립] 아래 모든 타임프레임의 실시간 데이터를 기반으로 매매 전략을 제안해줘.
-
-각 트레이딩 스타일별로 롱/숏 시나리오를 제시해줘:
-
-1. 스캘핑 (5분~15분 기준)
-   - 롱 시나리오: 진입가, 손절가, 목표가, 근거
-   - 숏 시나리오: 진입가, 손절가, 목표가, 근거
-
-2. 데이트레이딩 (1시간 기준)
-   - 롱/숏 시나리오 + 손익비
-
-3. 스윙 (4시간~일봉 기준)
-   - 롱/숏 시나리오 + 손익비
-
-4. 장기 (일봉~주봉 기준)
-   - 방향성 판단 + 주요 가격대
-
-각 시나리오에 구체적인 가격 수준과 근거를 포함해줘."""),
-
     ("📐 지지/저항", "📐 지지/저항 & 매물대 분석", """[지지/저항 & 매물대 분석] 아래 모든 타임프레임의 실시간 데이터를 기반으로 주요 지지/저항 레벨을 분석해줘.
 
 각 타임프레임에서 파악되는:
@@ -794,32 +770,25 @@ _QUICK_ITEMS = [
 - 강한 지지 구간 TOP 3
 - 강한 저항 구간 TOP 3
 - 현재가 기준 가장 가까운 지지/저항"""),
-
-    ("📈 추세 판단", "📈 추세 종합 판단", """[추세 종합 판단] 아래 모든 타임프레임의 실시간 데이터를 기반으로 현재 추세를 판단해줘.
-
-각 타임프레임(5분/15분/1시간/4시간/일봉/주봉)별로:
-1. EMA(20/50/200) 배열 상태와 가격 위치
-2. 볼린저밴드 위치 (상단/중단/하단 근접, 밴드 수축/확장)
-3. MACD 시그널 (골든/데드크로스, 히스토그램 방향)
-4. RSI 상태 (과매수/과매도/다이버전스)
-5. 거래량 (평균 대비 현재봉)
-6. 캔들/차트 형태
-
-종합:
-- 엘리엇 파동 카운팅 예측
-- 관점별 추세 정리: 스캘핑 / 데이트레이딩 / 스윙 / 장기
-- 현재 시장 구간: 추세(상승/하락) vs 횡보 vs 전환"""),
 ]
 
+# 🌊 RSI 파동 분석 버튼
+with cols[0]:
+    if st.button("🌊 RSI 파동 분석", key="rsi_wave_btn", use_container_width=True):
+        st.session_state._pending_rsi_wave = True
+        st.rerun()
+
+# 기존 퀵 분석 버튼 (지지/저항)
 for i, (btn_label, display_label, full_prompt) in enumerate(_QUICK_ITEMS):
-    with cols[i]:
+    with cols[i + 1]:
         if st.button(btn_label, key=f"quick_{i}", use_container_width=True):
             st.session_state._pending_msg = full_prompt
             st.session_state._pending_display = display_label
             st.session_state._pending_force_multi = True
             st.rerun()
 
-with cols[4]:
+# 📸 캡쳐 버튼
+with cols[2]:
     cap_count = len(st.session_state.pending_captures)
     cap_label = f"📸 캡쳐 ({cap_count})" if cap_count else "📸 캡쳐"
     if st.button(cap_label, key="quick_capture", use_container_width=True):
@@ -891,6 +860,74 @@ st.markdown('</div>', unsafe_allow_html=True)
 pending = st.session_state.pop("_pending_msg", None)
 pending_display = st.session_state.pop("_pending_display", None)
 force_multi = st.session_state.pop("_pending_force_multi", False)
+pending_rsi_wave = st.session_state.pop("_pending_rsi_wave", False)
+
+# ── 🌊 RSI 파동 분석 처리 ──
+if pending_rsi_wave and st.session_state.api_key:
+    symbol = sess.get("symbol", "BTCUSDT")
+
+    # 사용자 메시지 추가
+    user_prompt = "🌊 RSI 파동 분석"
+    sess["messages"].append({"role": "user", "content": user_prompt})
+    with st.chat_message("user", avatar="👤"):
+        st.markdown(user_prompt)
+
+    # 데이터 수집 + 분석
+    tf_label = " / ".join(WAVE_TIMEFRAMES)
+    with st.spinner(f"🌊 RSI 파동 데이터 수집 중 ({tf_label})..."):
+        rsi_results = analyze_rsi_wave(symbol)
+
+    # SVG + 카드 + 종합 판정 생성
+    svg_html = generate_wave_svg(rsi_results)
+    tf_cards = generate_tf_cards(rsi_results)
+    summary_text = generate_summary_text(rsi_results)
+    combined_html = svg_html  # SVG 시각화
+
+    # AI용 데이터 포맷팅
+    ai_prompt_text = format_rsi_wave_for_ai(symbol, rsi_results)
+
+    # AI 분석 스트리밍
+    with st.chat_message("assistant", avatar="🤖"):
+        # 1) SVG 파동 맵
+        st.markdown(svg_html, unsafe_allow_html=True)
+        # 2) 종합 판정
+        st.markdown(summary_text)
+        st.markdown("---")
+        # 3) 타임프레임별 상세 카드
+        with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
+            st.markdown(tf_cards)
+        st.markdown("---")
+        # 4) AI 코멘터리 스트리밍
+        st.caption(f"🤖 AI 분석 ({st.session_state.model})")
+        try:
+            # RSI 파동용 메시지 구성 — AI에게 분석 데이터를 user 메시지로 전달
+            ai_messages = list(sess["messages"])
+            ai_messages[-1] = {"role": "user", "content": ai_prompt_text}
+
+            ai_response = st.write_stream(
+                analyze_chart(
+                    api_key=st.session_state.api_key,
+                    model=st.session_state.model,
+                    messages=ai_messages,
+                    system_prompt_override=RSI_WAVE_SYSTEM_PROMPT,
+                )
+            )
+        except Exception as e:
+            ai_response = f"⚠️ AI 분석 오류: {str(e)}"
+            st.error(ai_response)
+
+    # 세션에 저장
+    full_content = summary_text + "\n\n" + str(ai_response) if ai_response else summary_text
+    sess["messages"].append({
+        "role": "assistant",
+        "content": full_content,
+        "rsi_wave_html": combined_html,
+    })
+    _safe_save_session(sess)
+    st.rerun()
+
+elif pending_rsi_wave and not st.session_state.api_key:
+    st.warning("🔑 사이드바 설정에서 OpenAI API 키를 먼저 입력하세요.")
 
 # ── 채팅 입력 (자동 캡쳐 체크박스 + 입력) ──
 st.session_state.auto_capture = st.checkbox(

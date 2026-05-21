@@ -75,19 +75,24 @@ SYSTEM_PROMPT_BRIEFING = """
 여기까지가 지표 브리핑입니다. 이후에 사용자 질문에 대한 본격적인 분석/답변을 작성하세요."""
 
 
-def analyze_chart(api_key, model, messages, image_base64=None, market_data="", extra_images=None):
+def analyze_chart(api_key, model, messages, image_base64=None, market_data="", extra_images=None, system_prompt_override=None):
     """
     차트 이미지 + 시장 데이터로 AI 분석 스트리밍.
     extra_images: 추가 이미지 base64 문자열 리스트
+    system_prompt_override: 시스템 프롬프트 완전 교체 (RSI 파동 분석 등)
     Yields: content chunks (str)
     """
     client = OpenAI(api_key=api_key)
 
-    # 이미지가 있을 때만 브리핑 지시 포함
-    has_images = image_base64 is not None or (extra_images and len(extra_images) > 0)
-    system_msg = SYSTEM_PROMPT_BASE
-    if has_images:
-        system_msg += SYSTEM_PROMPT_BRIEFING
+    # 시스템 프롬프트 결정
+    if system_prompt_override:
+        system_msg = system_prompt_override
+    else:
+        # 이미지가 있을 때만 브리핑 지시 포함
+        has_images = image_base64 is not None or (extra_images and len(extra_images) > 0)
+        system_msg = SYSTEM_PROMPT_BASE
+        if has_images:
+            system_msg += SYSTEM_PROMPT_BRIEFING
     if market_data:
         system_msg += f"\n\n{market_data}"
 
