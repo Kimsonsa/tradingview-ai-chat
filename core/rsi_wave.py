@@ -63,6 +63,10 @@ RSI_WAVE_SYSTEM_PROMPT = """당신은 암호화폐 기술적 분석 전문가입
 • 상위-하위 프레임 간 충돌이 있으면 반드시 언급
 • 진입/청산 타점이 있으면 구체적 가격 제시
 • 마크다운 취소선(~~텍스트~~) 절대 사용 금지
+• ⚠️ 경계선(borderline) RSI가 감지된 타임프레임이 있으면:
+  - 파동 맵의 화살표 방향이 실제와 다를 수 있음을 지적
+  - RSI 피크/트로프 값과 75/25 기준을 비교하여 실제 방향을 AI 관점에서 판단
+  - 예: "맵에는 상승으로 표시되었으나, RSI 최고점 74.2가 과매수(75)에 매우 근접하여 실제로는 하락 국면일 수 있습니다"
 
 ⚠️ 투자 조언이 아닌 기술적 분석 의견입니다."""
 
@@ -142,7 +146,7 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
             cycle_pos, cycle_desc = determine_cycle_position(
                 cur_rsi, prev_rsi, adx, ema_trend
             )
-            arrow_dir = determine_arrow_direction(rsi_vals)
+            arrow_dir, borderline = determine_arrow_direction(rsi_vals)
 
             # ── 다이버전스 ──
             div_type = detect_divergence(closes, rsi_vals)
@@ -187,6 +191,7 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "cycle_pos": cycle_pos,
                 "cycle_desc": cycle_desc,
                 "arrow_dir": arrow_dir,
+                "borderline": borderline,
                 "divergence": div_type,
                 "market_type": market_type,
                 "rsi_strategy_valid": rsi_strategy_valid,
@@ -232,24 +237,70 @@ def determine_cycle_position(rsi, prev_rsi, adx, ema_trend):
 def determine_arrow_direction(rsi_values):
     """RSI 히스토리에서 직전 과매수/과매도를 찾아 방향 결정
 
-    - 직전 극단값이 과매수(≥75)였으면 → 하락 중 (down)
-    - 직전 극단값이 과매도(≤25)였으면 → 상승 중 (up)
+    1. 최근 과매수(≥75) AND 과매도(≤25) 모두 탐색
+    2. 더 최근인 것이 방향 결정
+    3. 경계선(70~74.9 또는 25.1~30) 감지 → AI 코멘트용
+
+    Returns:
+        tuple: (direction: 'up'|'down', borderline: dict|None)
     """
-    if not rsi_values:
-        return "down"
+    if not rsi_values or len(rsi_values) < 5:
+        return "down", None
 
-    # 최근부터 과거로 탐색하여 첫 번째 극단값 찾기
+    # ── 양쪽 극단값을 모두 탐색 ──
+    last_ob_idx = -1   # 최근 과매수 위치
+    last_os_idx = -1   # 최근 과매도 위치
+
     for i in range(len(rsi_values) - 1, -1, -1):
-        if rsi_values[i] >= ARROW_OB:
-            return "down"  # 직전 과매수 → 하락 중
-        elif rsi_values[i] <= ARROW_OS:
-            return "up"    # 직전 과매도 → 상승 중
+        if rsi_values[i] >= ARROW_OB and last_ob_idx == -1:
+            last_ob_idx = i
+        if rsi_values[i] <= ARROW_OS and last_os_idx == -1:
+            last_os_idx = i
+        if last_ob_idx != -1 and last_os_idx != -1:
+            break
 
-    # 극단값이 없으면 RSI 50 기준으로 판단
-    if rsi_values[-1] >= 50:
-        return "up"
+    # ── 방향 판정 ──
+    if last_ob_idx != -1 and last_os_idx != -1:
+        # 둘 다 있으면 더 최근인 것이 승리
+        direction = "down" if last_ob_idx > last_os_idx else "up"
+    elif last_ob_idx != -1:
+        direction = "down"
+    elif last_os_idx != -1:
+        direction = "up"
     else:
-        return "down"
+        # 극단값 없음 → RSI 50 기준
+        direction = "up" if rsi_values[-1] >= 50 else "down"
+
+    # ── 경계선(borderline) 감지 ──
+    max_rsi = max(rsi_values)
+    min_rsi = min(rsi_values)
+    borderline = None
+
+    # 과매수 경계: 피크가 70~74.9인데 75 미달
+    if 70 <= max_rsi < ARROW_OB and last_ob_idx == -1:
+        borderline = {
+            "type": "near_overbought",
+            "value": round(max_rsi, 1),
+            "msg": f"RSI 최고점 {max_rsi:.1f} — 과매수(75) 근접, 하락 전환 가능성"
+        }
+    # 과매도 경계: 트러프가 25.1~30인데 25 미달
+    if ARROW_OS < min_rsi <= 30 and last_os_idx == -1:
+        bl = {
+            "type": "near_oversold",
+            "value": round(min_rsi, 1),
+            "msg": f"RSI 최저점 {min_rsi:.1f} — 과매도(25) 근접, 반등 가능성"
+        }
+        if borderline:  # 양쪽 모두 경계
+            borderline = {
+                "type": "both_near",
+                "near_ob": round(max_rsi, 1),
+                "near_os": round(min_rsi, 1),
+                "msg": f"RSI 범위 {min_rsi:.1f}~{max_rsi:.1f} — 양쪽 경계 근접, AI 판단 필요"
+            }
+        else:
+            borderline = bl
+
+    return direction, borderline
 
 
 def detect_divergence(closes, rsi_values, lookback=30):
@@ -706,6 +757,8 @@ def generate_summary_text(results):
         r = results.get(tf)
         if r and r.get("divergence"):
             conflicts.append(f"⚠️ **{tf}**: {r['divergence']} — 추세 전환 가능성 주시")
+        if r and r.get("borderline"):
+            conflicts.append(f"⚠️ **{tf}**: {r['borderline']['msg']} — AI 판단 필요")
 
     summary = "### 📊 종합 판정\n\n" + "\n".join(sections)
     if conflicts:
@@ -744,6 +797,8 @@ def format_rsi_wave_for_ai(symbol, results):
         lines.append(f"📍 판정: {r['cycle_pos']} — {r['cycle_desc']} | {r['rsi_strategy_valid']}")
         if r.get("divergence"):
             lines.append(f"⚠️ {r['divergence']} 감지")
+        if r.get("borderline"):
+            lines.append(f"⚠️ 경계선 판단 필요: {r['borderline']['msg']}")
         lines.append("")
 
     lines.append("위 데이터를 RSI 사이클 이론(과매수 80/과매도 20 기준)에 따라 분석해주세요.")
