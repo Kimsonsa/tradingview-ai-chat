@@ -395,9 +395,13 @@ def generate_wave_svg(results):
 
     svg_parts = []
 
-    # ── 시작 ──
-    svg_parts.append(f"""
-<div style="width:100%;max-width:720px;margin:16px auto;border-radius:16px;overflow:hidden;
+    # ── HTML 래퍼 시작 (components.html iframe용) ──
+    svg_parts.append(f"""<!DOCTYPE html>
+<html><head>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>body{{margin:0;padding:0;background:transparent;font-family:'Inter',sans-serif;}}</style>
+</head><body>
+<div style="width:100%;max-width:720px;margin:0 auto;border-radius:16px;overflow:hidden;
             box-shadow:0 4px 24px rgba(0,0,0,0.25);">
 <svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg"
      style="width:100%;height:auto;display:block;">
@@ -558,7 +562,7 @@ def generate_wave_svg(results):
         )
 
     # ── 닫기 ──
-    svg_parts.append("</svg>\n</div>")
+    svg_parts.append("</svg>\n</div>\n</body></html>")
 
     return "\n".join(svg_parts)
 
