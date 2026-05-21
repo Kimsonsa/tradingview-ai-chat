@@ -289,24 +289,18 @@ def detect_divergence(closes, rsi_values, lookback=30):
 # SVG 시각화 생성
 # ═══════════════════════════════════════════════
 
-def _get_arrow_color(rsi):
-    """RSI 구간에 따른 색상"""
-    if rsi >= OVERBOUGHT:
-        return "#EF4444"
-    elif rsi >= 65:
-        return "#F97316"
-    elif rsi >= 50:
-        return "#FBBF24"
-    elif rsi >= 35:
-        return "#60A5FA"
-    elif rsi > OVERSOLD:
-        return "#38BDF8"
-    else:
+def _get_arrow_color(direction):
+    """화살표 방향에 따른 색상: 상승=초록, 하락=빨강, 횡보=회색"""
+    if direction == "up":
         return "#22C55E"
+    elif direction == "down":
+        return "#EF4444"
+    else:
+        return "#94A3B8"
 
 
 def _svg_arrow(cx, cy, direction, color, adx=None):
-    """SVG 화살표 요소 생성
+    """SVG 화살표 요소 생성 — 순수 위/아래 방향
 
     Args:
         cx, cy: 중심 좌표
@@ -316,47 +310,50 @@ def _svg_arrow(cx, cy, direction, color, adx=None):
     """
     # ADX에 따른 화살표 크기
     if adx is not None and adx >= 40:
-        length = 28
+        length = 32
         width = 3.5
+        head_w = 8
     elif adx is not None and adx >= 25:
-        length = 23
+        length = 26
         width = 3
+        head_w = 7
     else:
-        length = 18
+        length = 20
         width = 2.5
+        head_w = 6
 
     half = length / 2
 
     if direction == "up":
-        x1, y1 = cx - half, cy + half * 0.6
-        x2, y2 = cx + half, cy - half * 0.6
+        # 순수 위쪽 화살표
+        x1, y1 = cx, cy + half
+        x2, y2 = cx, cy - half
+        # 화살머리: 위쪽 삼각형
+        p1 = f"{cx},{cy - half}"          # 꼭짓점 (위)
+        p2 = f"{cx - head_w},{cy - half + 10}"  # 왼쪽
+        p3 = f"{cx + head_w},{cy - half + 10}"  # 오른쪽
+        line_y2 = cy - half + 10
     elif direction == "down":
-        x1, y1 = cx - half, cy - half * 0.6
-        x2, y2 = cx + half, cy + half * 0.6
-    else:  # right
-        x1, y1 = cx - half, cy
-        x2, y2 = cx + half, cy
-
-    # 화살머리 계산
-    dx = x2 - x1
-    dy = y2 - y1
-    dist = math.sqrt(dx * dx + dy * dy)
-    if dist == 0:
-        return ""
-    ux, uy = dx / dist, dy / dist
-    px, py = -uy, ux
-
-    head_len = 9
-    head_w = 5
-    bx = x2 - ux * head_len
-    by = y2 - uy * head_len
-
-    p1 = f"{x2:.1f},{y2:.1f}"
-    p2 = f"{bx + px * head_w:.1f},{by + py * head_w:.1f}"
-    p3 = f"{bx - px * head_w:.1f},{by - py * head_w:.1f}"
+        # 순수 아래쪽 화살표
+        x1, y1 = cx, cy - half
+        x2, y2 = cx, cy + half
+        # 화살머리: 아래쪽 삼각형
+        p1 = f"{cx},{cy + half}"          # 꼭짓점 (아래)
+        p2 = f"{cx - head_w},{cy + half - 10}"  # 왼쪽
+        p3 = f"{cx + head_w},{cy + half - 10}"  # 오른쪽
+        line_y2 = cy + half - 10
+    else:
+        # 횡보: 작은 원으로 표시
+        return f"""
+        <circle cx="{cx}" cy="{cy}" r="5" fill="{color}" opacity="0.8"
+                filter="url(#glow)"/>
+        <line x1="{cx - 8}" y1="{cy}" x2="{cx + 8}" y2="{cy}"
+              stroke="{color}" stroke-width="{width}" stroke-linecap="round"
+              filter="url(#glow)"/>
+        """
 
     return f"""
-        <line x1="{x1:.1f}" y1="{y1:.1f}" x2="{bx:.1f}" y2="{by:.1f}"
+        <line x1="{x1:.1f}" y1="{y1:.1f}" x2="{cx:.1f}" y2="{line_y2:.1f}"
               stroke="{color}" stroke-width="{width}" stroke-linecap="round"
               filter="url(#glow)"/>
         <polygon points="{p1} {p2} {p3}" fill="{color}" filter="url(#glow)"/>
@@ -480,9 +477,9 @@ def generate_wave_svg(results):
         rsi = r["rsi"]
         x = x_positions[i]
         y = rsi_to_y(rsi)
-        color = _get_arrow_color(rsi)
-        adx = r.get("adx")
         arrow = r.get("arrow_dir", "right")
+        color = _get_arrow_color(arrow)
+        adx = r.get("adx")
         points.append((x, y, rsi, tf, arrow, color, adx))
 
     # ── 연결선 (RSI 프로파일) ──
@@ -544,15 +541,13 @@ def generate_wave_svg(results):
     # ── 범례 ──
     legend_y = H - 12
     legends = [
-        ("#EF4444", "과매수(≥80)"),
-        ("#F97316", "접근"),
-        ("#FBBF24", "중립↑"),
-        ("#60A5FA", "중립↓"),
-        ("#22C55E", "과매도(≤20)"),
+        ("#22C55E", "RSI 상승"),
+        ("#EF4444", "RSI 하락"),
+        ("#94A3B8", "횡보"),
     ]
-    legend_start = W / 2 - len(legends) * 55 / 2
+    legend_start = W / 2 - len(legends) * 50 / 2
     for j, (lc, lt) in enumerate(legends):
-        lx = legend_start + j * 63
+        lx = legend_start + j * 80
         svg_parts.append(
             f'  <circle cx="{lx:.0f}" cy="{legend_y - 3}" r="4" fill="{lc}"/>'
         )
