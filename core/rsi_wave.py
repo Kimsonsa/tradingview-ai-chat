@@ -23,6 +23,10 @@ from core.market_data import (
 OVERBOUGHT = 80
 OVERSOLD = 20
 
+# 화살표 방향 판정용 (직전 과매수/과매도 탐색)
+ARROW_OB = 75
+ARROW_OS = 25
+
 WAVE_TIMEFRAMES = ["1분", "5분", "15분", "1시간", "4시간", "1일", "1주"]
 
 TF_LABELS_SHORT = {
@@ -138,7 +142,7 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
             cycle_pos, cycle_desc = determine_cycle_position(
                 cur_rsi, prev_rsi, adx, ema_trend
             )
-            arrow_dir = determine_arrow_direction(cur_rsi, prev_rsi)
+            arrow_dir = determine_arrow_direction(rsi_vals)
 
             # ── 다이버전스 ──
             div_type = detect_divergence(closes, rsi_vals)
@@ -225,12 +229,24 @@ def determine_cycle_position(rsi, prev_rsi, adx, ema_trend):
             return "🟡 하락 반등", "RSI 50 하회 반등 중"
 
 
-def determine_arrow_direction(rsi, prev_rsi):
-    """화살표 방향: 'up', 'down', 'right'"""
-    diff = rsi - prev_rsi
-    if abs(diff) < 2:
-        return "right"
-    elif diff > 0:
+def determine_arrow_direction(rsi_values):
+    """RSI 히스토리에서 직전 과매수/과매도를 찾아 방향 결정
+
+    - 직전 극단값이 과매수(≥75)였으면 → 하락 중 (down)
+    - 직전 극단값이 과매도(≤25)였으면 → 상승 중 (up)
+    """
+    if not rsi_values:
+        return "down"
+
+    # 최근부터 과거로 탐색하여 첫 번째 극단값 찾기
+    for i in range(len(rsi_values) - 1, -1, -1):
+        if rsi_values[i] >= ARROW_OB:
+            return "down"  # 직전 과매수 → 하락 중
+        elif rsi_values[i] <= ARROW_OS:
+            return "up"    # 직전 과매도 → 상승 중
+
+    # 극단값이 없으면 RSI 50 기준으로 판단
+    if rsi_values[-1] >= 50:
         return "up"
     else:
         return "down"
@@ -290,13 +306,11 @@ def detect_divergence(closes, rsi_values, lookback=30):
 # ═══════════════════════════════════════════════
 
 def _get_arrow_color(direction):
-    """화살표 방향에 따른 색상: 상승=초록, 하락=빨강, 횡보=회색"""
+    """화살표 방향에 따른 색상: 상승=초록, 하락=빨강"""
     if direction == "up":
         return "#22C55E"
-    elif direction == "down":
-        return "#EF4444"
     else:
-        return "#94A3B8"
+        return "#EF4444"
 
 
 def _svg_arrow(cx, cy, direction, color, adx=None):
@@ -343,14 +357,13 @@ def _svg_arrow(cx, cy, direction, color, adx=None):
         p3 = f"{cx + head_w},{cy + half - 10}"  # 오른쪽
         line_y2 = cy + half - 10
     else:
-        # 횡보: 작은 원으로 표시
-        return f"""
-        <circle cx="{cx}" cy="{cy}" r="5" fill="{color}" opacity="0.8"
-                filter="url(#glow)"/>
-        <line x1="{cx - 8}" y1="{cy}" x2="{cx + 8}" y2="{cy}"
-              stroke="{color}" stroke-width="{width}" stroke-linecap="round"
-              filter="url(#glow)"/>
-        """
+        # fallback: 하락으로 처리
+        x1, y1 = cx, cy - half
+        x2, y2 = cx, cy + half
+        p1 = f"{cx},{cy + half}"
+        p2 = f"{cx - head_w},{cy + half - 10}"
+        p3 = f"{cx + head_w},{cy + half - 10}"
+        line_y2 = cy + half - 10
 
     return f"""
         <line x1="{x1:.1f}" y1="{y1:.1f}" x2="{cx:.1f}" y2="{line_y2:.1f}"
@@ -541,13 +554,12 @@ def generate_wave_svg(results):
     # ── 범례 ──
     legend_y = H - 12
     legends = [
-        ("#22C55E", "RSI 상승"),
-        ("#EF4444", "RSI 하락"),
-        ("#94A3B8", "횡보"),
+        ("#22C55E", "▲ 상승 중 (직전 과매도 후)"),
+        ("#EF4444", "▼ 하락 중 (직전 과매수 후)"),
     ]
-    legend_start = W / 2 - len(legends) * 50 / 2
+    legend_start = W / 2 - len(legends) * 80 / 2
     for j, (lc, lt) in enumerate(legends):
-        lx = legend_start + j * 80
+        lx = legend_start + j * 160
         svg_parts.append(
             f'  <circle cx="{lx:.0f}" cy="{legend_y - 3}" r="4" fill="{lc}"/>'
         )
