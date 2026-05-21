@@ -196,6 +196,11 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "market_type": market_type,
                 "rsi_strategy_valid": rsi_strategy_valid,
             }
+
+            # 포지션 판정 (결과 딕셔너리 완성 후)
+            pos, conf = determine_position(results[tf_label])
+            results[tf_label]["position"] = pos
+            results[tf_label]["confidence"] = conf
         except Exception as e:
             results[tf_label] = {"error": str(e)}
 
@@ -301,6 +306,84 @@ def determine_arrow_direction(rsi_values):
             borderline = bl
 
     return direction, borderline
+
+
+def determine_position(r):
+    """타임프레임별 롱/숑 포지션 + 확신 등급 판정
+
+    Returns:
+        tuple: (position: '롱'|'숑'|'중립', confidence: '확실'|'강함'|'우세'|'약간'|'관망')
+    """
+    if r.get("error"):
+        return "중립", "관망"
+
+    arrow = r["arrow_dir"]
+    rsi = r["rsi"]
+    prev_rsi = r["prev_rsi"]
+    adx = r.get("adx") or 0
+    ema_trend = r.get("ema_trend", "")
+    borderline = r.get("borderline")
+    divergence = r.get("divergence")
+
+    # 기본 방향
+    position = "롱" if arrow == "up" else "숑"
+    score = 50  # 기본 점수
+
+    # 1) RSI 극단값 거리 — 멀수록 확신
+    if rsi >= 75 or rsi <= 25:
+        score += 25  # 과매수/과매도 구간 진입
+    elif rsi >= 65 or rsi <= 35:
+        score += 12
+    elif 45 <= rsi <= 55:
+        score -= 15  # 중립 구간
+
+    # 2) RSI 모멘텀 일치 여부
+    rsi_rising = rsi > prev_rsi
+    if (arrow == "up" and rsi_rising) or (arrow == "down" and not rsi_rising):
+        score += 10
+    else:
+        score -= 8
+
+    # 3) EMA 정배열 일치
+    if arrow == "up" and "상승" in ema_trend:
+        score += 15
+    elif arrow == "down" and "하락" in ema_trend:
+        score += 15
+    elif "횡보" in ema_trend or "혼조" in ema_trend:
+        score -= 5
+    else:
+        score -= 10  # 역방향 EMA
+
+    # 4) ADX 추세 강도
+    if adx >= 30:
+        score += 10
+    elif adx >= 20:
+        score += 5
+    elif adx < 15:
+        score -= 8
+
+    # 5) 다이버전스 (역전 경고)
+    if divergence:
+        score -= 15
+
+    # 6) 경계선 (애매)
+    if borderline:
+        score -= 10
+
+    # 점수 → 등급 변환
+    if score >= 80:
+        confidence = "확실"
+    elif score >= 65:
+        confidence = "강함"
+    elif score >= 50:
+        confidence = "우세"
+    elif score >= 35:
+        confidence = "약간"
+    else:
+        confidence = "관망"
+        position = "중립"
+
+    return position, confidence
 
 
 def detect_divergence(closes, rsi_values, lookback=30):
@@ -431,8 +514,8 @@ def generate_wave_svg(results):
         str: HTML 문자열 (div + inline SVG)
     """
     # ── 레이아웃 상수 ──
-    W, H = 720, 430
-    PAD_L, PAD_R, PAD_T, PAD_B = 60, 25, 45, 70
+    W, H = 720, 470
+    PAD_L, PAD_R, PAD_T, PAD_B = 60, 25, 45, 105
     PLOT_W = W - PAD_L - PAD_R   # 635
     PLOT_H = H - PAD_T - PAD_B   # 315
 
@@ -597,10 +680,25 @@ def generate_wave_svg(results):
             f'font-size="12" font-family="Inter,sans-serif" text-anchor="middle" '
             f'font-weight="500">{short}</text>'
         )
-        svg_parts.append(
-            f'  <text x="{x:.1f}" y="{H - PAD_B + 40:.0f}" fill="#CCCCDD" '
-            f'font-size="13" text-anchor="middle">{icon}</text>'
-        )
+
+        # 포지션 라벨 (롱/숑 + 등급)
+        if r and not r.get("error"):
+            pos = r.get("position", "")
+            conf = r.get("confidence", "")
+            if pos == "롱":
+                pos_color = "#22C55E"
+                pos_label = f"▲{pos}:{conf}"
+            elif pos == "숑":
+                pos_color = "#EF4444"
+                pos_label = f"▼{pos}:{conf}"
+            else:
+                pos_color = "#94A3B8"
+                pos_label = f"●{pos}"
+            svg_parts.append(
+                f'  <text x="{x:.1f}" y="{H - PAD_B + 40:.0f}" fill="{pos_color}" '
+                f'font-size="10" font-family="Inter,sans-serif" text-anchor="middle" '
+                f'font-weight="600">{pos_label}</text>'
+            )
 
     # ── 범례 ──
     legend_y = H - 12
@@ -714,7 +812,10 @@ def generate_summary_text(results):
         for tf in tfs:
             r = results.get(tf)
             if r and not r.get("error"):
-                summaries.append(f"{tf}: {r['cycle_pos']} ({r['cycle_desc']})")
+                pos = r.get('position', '')
+                conf = r.get('confidence', '')
+                pos_icon = '🟢' if pos == '롱' else '🔴' if pos == '숑' else '⚪'
+                summaries.append(f"{tf}: {pos_icon} **{pos}:{conf}** ({r['cycle_desc']})")
         if summaries:
             sections.append(f"• **{group_name}**: {' / '.join(summaries)}")
         else:
@@ -795,6 +896,7 @@ def format_rsi_wave_for_ai(symbol, results):
             lines.append(f"VWAP: {r['vwap']:.1f} ({pos})")
         lines.append(f"거래량: 5봉평균 대비 {r['vol_ratio']}%")
         lines.append(f"📍 판정: {r['cycle_pos']} — {r['cycle_desc']} | {r['rsi_strategy_valid']}")
+        lines.append(f"🎯 포지션: {r.get('position','')}:{r.get('confidence','')}")
         if r.get("divergence"):
             lines.append(f"⚠️ {r['divergence']} 감지")
         if r.get("borderline"):

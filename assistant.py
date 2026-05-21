@@ -615,7 +615,7 @@ if st.session_state.viewing_history:
         for msg in hist_data.get("messages", []):
             with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
                 if msg.get("rsi_wave_html"):
-                    components.html(msg["rsi_wave_html"], height=460, scrolling=False)
+                    components.html(msg["rsi_wave_html"], height=500, scrolling=False)
                 st.markdown(msg["content"])
 
     else:
@@ -731,7 +731,7 @@ def _shorten_prompt(content):
 for msg in sess.get("messages", []):
     with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
         if msg.get("rsi_wave_html"):
-            components.html(msg["rsi_wave_html"], height=460, scrolling=False)
+            components.html(msg["rsi_wave_html"], height=500, scrolling=False)
         display = _shorten_prompt(msg["content"]) if msg["role"] == "user" else msg["content"]
         st.markdown(display)
         if msg.get("image"):
@@ -890,7 +890,7 @@ if pending_rsi_wave and st.session_state.api_key:
     # AI 분석 스트리밍
     with st.chat_message("assistant", avatar="🤖"):
         # 1) SVG 파동 맵
-        components.html(svg_html, height=460, scrolling=False)
+        components.html(svg_html, height=500, scrolling=False)
         # 2) 종합 판정
         st.markdown(summary_text)
         st.markdown("---")
