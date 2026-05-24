@@ -817,7 +817,7 @@ def calc_regime_targets(regime, price, ema20, ema50, vwap, bb_upper, bb_mid, bb_
 # ═══════════════════════════════════════════════
 
 def determine_position(r):
-    """타임프레임별 롱/숑 포지션 + 확신 등급 판정 (v2 점수 모델)
+    """타임프레임별 롱/숏 포지션 + 확신 등급 판정 (v2 점수 모델)
 
     Returns:
         dict: {position, confidence, long_score, short_score, signal_type}
@@ -1012,15 +1012,15 @@ def determine_position(r):
         else:
             signal_type = "VALID_LONG"
     elif short_score >= 70 and short_score > long_score + 20:
-        position = "숑"
+        position = "숏"
         confidence = "확실"
         signal_type = "BEARISH_CONTINUATION"
     elif short_score >= 50 and short_score > long_score + 15:
-        position = "숑"
+        position = "숏"
         confidence = "강함"
         signal_type = "SHORT_BIAS"
     elif short_score >= 35 and short_score > long_score:
-        position = "숑"
+        position = "숏"
         confidence = "우세"
         signal_type = "SHORT_BIAS"
     elif abs(long_score - short_score) < 10:
@@ -1032,7 +1032,7 @@ def determine_position(r):
         confidence = "약간"
         signal_type = "WEAK_LONG"
     else:
-        position = "숑"
+        position = "숏"
         confidence = "약간"
         signal_type = "WEAK_SHORT"
 
@@ -1094,7 +1094,7 @@ def apply_htf_filter(results):
                     r["signal_type"] = "COUNTER_TREND_SCALP"
                 # 포지션 재판정
                 if r["long_score"] <= r.get("short_score", 0):
-                    r["position"] = "숑"
+                    r["position"] = "숏"
                     r["confidence"] = "우세"
                 else:
                     r["confidence"] = "약간"
@@ -1590,7 +1590,7 @@ def generate_wave_svg(results):
             if pos == "롱":
                 pos_color = "#22C55E"
                 pos_label = f"▲{pos}:{conf}"
-            elif pos == "숑":
+            elif pos == "숏":
                 pos_color = "#EF4444"
                 pos_label = f"▼{pos}:{conf}"
             else:
@@ -1812,7 +1812,7 @@ def generate_summary_text(results):
                 conf = r.get('confidence', '')
                 regime = r.get('regime', '')
                 regime_label = REGIME_LABELS.get(regime, '')
-                pos_icon = '🟢' if pos == '롱' else '🔴' if pos == '숑' else '⚪'
+                pos_icon = '🟢' if pos == '롱' else '🔴' if pos == '숏' else '⚪'
                 signal = r.get('signal_type', '')
                 signal_label = SIGNAL_LABELS.get(signal, '')
 
