@@ -62,6 +62,8 @@ SIGNAL_LABELS = {
     "SCALP_LONG_ONLY": "🟡 스캘핑 반등만",
     "COUNTER_TREND_SCALP": "🟡 역추세 스캘핑",
     "WEAK_LONG": "⚪ 약한 롱",
+    "BEARISH_EXPANSION": "🔴💥 하방 스퀴즈 확장",
+    "BULLISH_EXPANSION": "🟢💥 상방 스퀴즈 확장",
     "BEARISH_CONTINUATION": "🔴 하락 지속 숏",
     "SHORT_BIAS": "🔴 숏 우위",
     "WEAK_SHORT": "⚪ 약한 숏",
@@ -112,6 +114,10 @@ RSI_WAVE_SYSTEM_PROMPT = """당신은 암호화폐 기술적 분석 전문가입
   - VERY_WEAK(<45): 하락 지속 / WEAK(<50): 약반등 / NORMAL(<60): 정상 / STRONG(≥60): 전환 가능
 • **거래량 흡수**: 큰 거래량 + 긴 아래꼬리 + 종가 위쪽 = 바닥 흡수 (롱 긍정)
 • **거래량 지속**: 큰 거래량 + 저가 마감 + 회복 실패 = 하락 지속
+• **스퀴즈 확장(BEARISH/BULLISH_EXPANSION)**: BB 이탈 + 거래량 300%↑ + RSI 극단 + VWAP/EMA 이탈 → 기존 롱/숏 즉시 무효화
+  - 하방 확장: price < BB하단 + 거래량폭발 + RSI<30 + VWAP아래 + EMA역배열 → 롱 완전 무효, 숏 확실
+  - 상방 확장: price > BB상단 + 거래량폭발 + RSI>70 + VWAP위 + EMA정배열 → 숏 완전 무효, 롱 확실
+  - RANGE에서 갑자기 BB 이탈하면서 거래량 터지면 그 전의 "롱 우위" 판정은 즉시 뒤집힘
 
 ━━━ 멀티 타임프레임 역할 ━━━
 • 방향 (일봉/4시간/1시간): RSI 50 기준 + EMA/VWAP → 큰 추세
@@ -746,6 +752,102 @@ def detect_failed_bull_div(div_info, rsi_recovery, close, ema20, vwap, closes):
 
 
 # ═══════════════════════════════════════════════
+# 스퀴즈 확장 감지 (Bearish / Bullish Expansion)
+# ═══════════════════════════════════════════════
+
+def detect_squeeze_expansion(price, rsi, bb_upper, bb_lower, vwap, ema20, ema50, ema200,
+                             vol_ratio, macd_hist, minus_di, plus_di):
+    """볼린저밴드 이탈 + 거래량 폭발 = 스퀴즈 확장 감지
+
+    RANGE/약추세에서 갑자기 BB 밖으로 이탈하면서 거래량이 폭발하면
+    기존 롱/숏 판정을 즉시 무효화하고 확장 방향으로 전환.
+
+    하방 확장 조건 (BEARISH_EXPANSION):
+      - price < BB하단
+      - 거래량 > 평균 × 3 (vol_ratio >= 300%)
+      - RSI < 30
+      - close < VWAP
+      - EMA20 < EMA50 (역배열)
+
+    상방 확장 조건 (BULLISH_EXPANSION):
+      - price > BB상단
+      - 거래량 > 평균 × 3 (vol_ratio >= 300%)
+      - RSI > 70
+      - close > VWAP
+      - EMA20 > EMA50 (정배열)
+
+    Returns:
+        dict | None: {type, conditions, detail} 또는 None
+    """
+    vwap = vwap or price
+    minus_di = minus_di or 0
+    plus_di = plus_di or 0
+
+    # ── 하방 스퀴즈 확장 ──
+    if bb_lower is not None and price < bb_lower:
+        conditions = {
+            "bb_break": True,
+            "vol_spike": vol_ratio >= 300,
+            "rsi_oversold": rsi < 30,
+            "below_vwap": price < vwap,
+            "ema_bearish": ema20 < ema50,
+            "ema_full_bearish": ema20 < ema50 < ema200 if ema200 else False,
+            "di_bearish": minus_di > plus_di,
+            "macd_negative": macd_hist < 0 if macd_hist is not None else False,
+        }
+        # 핵심 5개 중 4개 이상 충족
+        core = [conditions["bb_break"], conditions["vol_spike"],
+                conditions["rsi_oversold"], conditions["below_vwap"],
+                conditions["ema_bearish"]]
+        core_met = sum(1 for v in core if v)
+        total_met = sum(1 for v in conditions.values() if v)
+
+        if core_met >= 4:
+            return {
+                "type": "BEARISH_EXPANSION",
+                "core_met": core_met,
+                "total_met": total_met,
+                "conditions": conditions,
+                "detail": (
+                    f"하방 확장 — BB하단 이탈, 거래량 {vol_ratio}%, RSI {rsi:.1f}, "
+                    f"VWAP/EMA 아래, {core_met}/5 핵심조건 충족"
+                ),
+            }
+
+    # ── 상방 스퀴즈 확장 ──
+    if bb_upper is not None and price > bb_upper:
+        conditions = {
+            "bb_break": True,
+            "vol_spike": vol_ratio >= 300,
+            "rsi_overbought": rsi > 70,
+            "above_vwap": price > vwap,
+            "ema_bullish": ema20 > ema50,
+            "ema_full_bullish": ema20 > ema50 > ema200 if ema200 else False,
+            "di_bullish": plus_di > minus_di,
+            "macd_positive": macd_hist > 0 if macd_hist is not None else False,
+        }
+        core = [conditions["bb_break"], conditions["vol_spike"],
+                conditions["rsi_overbought"], conditions["above_vwap"],
+                conditions["ema_bullish"]]
+        core_met = sum(1 for v in core if v)
+        total_met = sum(1 for v in conditions.values() if v)
+
+        if core_met >= 4:
+            return {
+                "type": "BULLISH_EXPANSION",
+                "core_met": core_met,
+                "total_met": total_met,
+                "conditions": conditions,
+                "detail": (
+                    f"상방 확장 — BB상단 돌파, 거래량 {vol_ratio}%, RSI {rsi:.1f}, "
+                    f"VWAP/EMA 위, {core_met}/5 핵심조건 충족"
+                ),
+            }
+
+    return None
+
+
+# ═══════════════════════════════════════════════
 # 목표가 산출
 # ═══════════════════════════════════════════════
 
@@ -925,6 +1027,14 @@ def determine_position(r):
     if bear_flag:
         long_score -= 15
 
+    # 13) 스퀴즈 확장 — 즉시 무효화
+    squeeze = r.get("squeeze_expansion")
+    if squeeze:
+        if squeeze["type"] == "BEARISH_EXPANSION":
+            long_score -= 50  # 롱 완전 무효화
+        elif squeeze["type"] == "BULLISH_EXPANSION":
+            long_score += 30
+
     # ════════════════════════
     # 숏 점수 (0~100+)
     # ════════════════════════
@@ -990,6 +1100,13 @@ def determine_position(r):
     elif adx >= 25 and regime in ("DOWN_TREND", "DOWN_BIAS"):
         short_score += 5
 
+    # 13) 스퀴즈 확장 — 즉시 강화
+    if squeeze:
+        if squeeze["type"] == "BEARISH_EXPANSION":
+            short_score += 40  # 숏 강력 가산
+        elif squeeze["type"] == "BULLISH_EXPANSION":
+            short_score -= 50  # 숏 무효화
+
     # ════════════════════════
     # 최종 판정
     # ════════════════════════
@@ -1035,6 +1152,19 @@ def determine_position(r):
         position = "숏"
         confidence = "약간"
         signal_type = "WEAK_SHORT"
+
+    # ════════════════════════
+    # 스퀴즈 확장 오버라이드 — 최우선
+    # ════════════════════════
+    if squeeze:
+        if squeeze["type"] == "BEARISH_EXPANSION":
+            position = "숏"
+            confidence = "확실"
+            signal_type = "BEARISH_EXPANSION"
+        elif squeeze["type"] == "BULLISH_EXPANSION":
+            position = "롱"
+            confidence = "확실"
+            signal_type = "BULLISH_EXPANSION"
 
     return {
         "position": position,
@@ -1227,6 +1357,25 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
             # ── 베어 플래그 ──
             bear_flag = detect_bear_flag(candles, rsi_vals, atr, e20, vwap)
 
+            # ── 스퀴즈 확장 감지 (BB 이탈 + 거래량 폭발) ──
+            squeeze_expansion = detect_squeeze_expansion(
+                cur, cur_rsi, bb_upper, bb_lower, vwap,
+                e20, e50, e200, vol_ratio, macd_hist, minus_di, plus_di
+            )
+
+            # 스퀴즈 확장 시 레짐 오버라이드
+            if squeeze_expansion:
+                if squeeze_expansion["type"] == "BEARISH_EXPANSION":
+                    regime = "DOWN_TREND"
+                    regime_params = get_regime_rsi_params(regime)
+                elif squeeze_expansion["type"] == "BULLISH_EXPANSION":
+                    regime = "UP_TREND"
+                    regime_params = get_regime_rsi_params(regime)
+                # 사이클 재판정 (레짐 변경 반영)
+                cycle_pos, cycle_desc = determine_cycle_position(
+                    cur_rsi, prev_rsi, adx, ema_trend, regime
+                )
+
             # ── 다이버전스 확정/실패 평가 ──
             div_status = None
             if div_v2:
@@ -1301,6 +1450,7 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "rsi_recovery": rsi_recovery,
                 "vol_pattern": vol_pattern,
                 "bear_flag": bear_flag,
+                "squeeze_expansion": squeeze_expansion,
                 "targets": targets,
                 "ema20_slope": round(ema20_slope, 3),
             }
@@ -1615,18 +1765,23 @@ def generate_wave_svg(results):
 
             # 신호 유형 라벨 (NEW — 핵심 신호만 표시)
             signal = r.get("signal_type", "")
-            if signal in ("STRONG_LONG_REVERSAL", "BEARISH_CONTINUATION", "COUNTER_TREND_SCALP", "SCALP_LONG_ONLY"):
+            if signal in ("STRONG_LONG_REVERSAL", "BEARISH_CONTINUATION", "COUNTER_TREND_SCALP", "SCALP_LONG_ONLY",
+                          "BEARISH_EXPANSION", "BULLISH_EXPANSION"):
                 sig_labels = {
                     "STRONG_LONG_REVERSAL": "강롱전환",
                     "BEARISH_CONTINUATION": "하락지속",
                     "COUNTER_TREND_SCALP": "역추세",
                     "SCALP_LONG_ONLY": "스캘핑만",
+                    "BEARISH_EXPANSION": "💥하방확장",
+                    "BULLISH_EXPANSION": "💥상방확장",
                 }
                 sig_colors = {
                     "STRONG_LONG_REVERSAL": "#22C55E",
                     "BEARISH_CONTINUATION": "#EF4444",
                     "COUNTER_TREND_SCALP": "#F59E0B",
                     "SCALP_LONG_ONLY": "#F59E0B",
+                    "BEARISH_EXPANSION": "#FF0000",
+                    "BULLISH_EXPANSION": "#00FF00",
                 }
                 sig_text = sig_labels.get(signal, "")
                 sig_color = sig_colors.get(signal, "#94A3B8")
@@ -1735,6 +1890,13 @@ def generate_tf_cards(results):
         if r.get("bear_flag"):
             bear_flag_str = f"\n> ⚠️ **베어 플래그** — {r['bear_flag']['detail']}"
 
+        # 스퀴즈 확장
+        squeeze_str = ""
+        if r.get("squeeze_expansion"):
+            sq = r["squeeze_expansion"]
+            sq_icon = "🔴💥" if sq["type"] == "BEARISH_EXPANSION" else "🟢💥"
+            squeeze_str = f"\n> {sq_icon} **스퀴즈 확장** — {sq['detail']}"
+
         # 거래량 패턴
         vol_pat = r.get("vol_pattern") or {}
         vol_pat_str = ""
@@ -1782,7 +1944,7 @@ def generate_tf_cards(results):
 
 📍 **{r['cycle_desc']}** — {r['rsi_strategy_valid']}
 🎯 **{signal_label}** (롱:{long_s} / 숏:{short_s}){htf_str}
-📐 {rsi_tgt}{target_str}{div_str}{bear_flag_str}
+📐 {rsi_tgt}{target_str}{div_str}{bear_flag_str}{squeeze_str}
 
 ---
 """
@@ -1977,6 +2139,12 @@ def format_rsi_wave_for_ai(symbol, results):
         bf = r.get("bear_flag")
         if bf:
             lines.append(f"⚠️ 베어 플래그: {bf['detail']}")
+
+        # 스퀴즈 확장
+        sq = r.get("squeeze_expansion")
+        if sq:
+            lines.append(f"💥 스퀴즈 확장: {sq['type']} — {sq['detail']}")
+            lines.append(f"   조건 충족: {sq['core_met']}/5 핵심, {sq['total_met']}/8 전체")
 
         # 목표가
         targets = r.get("targets") or {}
