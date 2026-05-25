@@ -807,8 +807,10 @@
     /* Configuration & State                      */
     /* ═══════════════════════════════════════════ */
     const SUPABASE_URL = 'https://gqmjakklasdrromjetmo.supabase.co';
+    const DEFAULT_ANON_KEY = 'sb_publishable_H_knzoGt6FNxyalTUPfqhA_ktiFX3Ks';
     const STORAGE_KEY = 'tradeai_mobile_config';
     let CONFIG = loadConfig();
+    if (!CONFIG.anonKey) CONFIG.anonKey = DEFAULT_ANON_KEY;
     let currentSessions = [];
     let currentDetailId = null;
 
