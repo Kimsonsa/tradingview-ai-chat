@@ -1074,19 +1074,20 @@
 
         content.innerHTML = html;
 
-        // Render RSI wave iframes
-        content.querySelectorAll('.rsi-wave-container').forEach(container => {
-          const htmlData = container.getAttribute('data-html');
-          if (htmlData) {
-            const iframe = document.createElement('iframe');
-            iframe.sandbox = 'allow-scripts';
-            container.appendChild(iframe);
-            const doc = iframe.contentDocument || iframe.contentWindow.document;
-            doc.open();
-            doc.write(decodeURIComponent(htmlData));
-            doc.close();
-          }
-        });
+        // Render RSI wave iframes (using srcdoc to avoid cross-origin errors)
+        try {
+          content.querySelectorAll('.rsi-wave-container').forEach(container => {
+            const htmlData = container.getAttribute('data-html');
+            if (htmlData) {
+              const iframe = document.createElement('iframe');
+              iframe.sandbox = 'allow-scripts';
+              iframe.srcdoc = decodeURIComponent(htmlData);
+              container.appendChild(iframe);
+            }
+          });
+        } catch (iframeErr) {
+          console.warn('RSI wave rendering skipped:', iframeErr);
+        }
 
       } catch (e) {
         content.innerHTML = `
