@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#FFFFF0" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>TradeAI — 모바일</title>
+  <meta name="description" content="TradeAI 거래 분석 모바일 뷰어">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="../pwa/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════ */
+    /* CSS Variables                               */
+    /* ═══════════════════════════════════════════ */
+    :root {
+      --bg: #FFFFF0;
+      --bg-secondary: #FFF8E7;
+      --bg-card: #FFFFFF;
+      --bg-card-hover: #FFFDF5;
+      --bg-user-bubble: #EBF0FF;
+      --bg-ai-bubble: #FFFEF8;
+      --text: #2D3436;
+      --text-secondary: #5D4E37;
+      --text-muted: #9A8B78;
+      --border: #E8DFC8;
+      --border-light: #F0E8D5;
+      --accent: #2962FF;
+      --accent-light: rgba(41, 98, 255, 0.08);
+      --accent-glow: rgba(41, 98, 255, 0.2);
+      --green: #16A34A;
+      --green-bg: rgba(22, 163, 74, 0.08);
+      --red: #EF4444;
+      --red-bg: rgba(239, 68, 68, 0.08);
+      --shadow-sm: 0 1px 3px rgba(139, 115, 85, 0.06);
+      --shadow-md: 0 4px 12px rgba(139, 115, 85, 0.08);
+      --shadow-lg: 0 8px 24px rgba(139, 115, 85, 0.12);
+      --radius: 14px;
+      --radius-sm: 10px;
+      --header-height: 56px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --bg-secondary: #161b22;
+        --bg-card: #1c2128;
+        --bg-card-hover: #22272e;
+        --bg-user-bubble: #1a2744;
+        --bg-ai-bubble: #1c2128;
+        --text: #e6edf3;
+        --text-secondary: #c9d1d9;
+        --text-muted: #8b949e;
+        --border: #30363d;
+        --border-light: #21262d;
+        --accent: #58a6ff;
+        --accent-light: rgba(88, 166, 255, 0.1);
+        --accent-glow: rgba(88, 166, 255, 0.25);
+        --green: #3fb950;
+        --green-bg: rgba(63, 185, 80, 0.1);
+        --red: #f85149;
+        --red-bg: rgba(248, 81, 73, 0.1);
+        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+        --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+        --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+      }
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Global Reset & Base                        */
+    /* ═══════════════════════════════════════════ */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Screen Container                           */
+    /* ═══════════════════════════════════════════ */
+    .screen {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                  opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      will-change: transform, opacity;
+      background: var(--bg);
+      z-index: 1;
+    }
+    .screen.hidden {
+      transform: translateX(100%);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .screen.hidden-left {
+      transform: translateX(-30%);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Header Bar                                 */
+    /* ═══════════════════════════════════════════ */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      height: var(--header-height);
+      padding-top: var(--safe-top);
+      min-height: calc(var(--header-height) + var(--safe-top));
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      flex-shrink: 0;
+    }
+    .header-title {
+      flex: 1;
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: -0.3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .header-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+    .header-btn {
+      background: none;
+      border: none;
+      font-size: 22px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 10px;
+      transition: background 0.2s, color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 40px;
+      min-height: 40px;
+    }
+    .header-btn:active {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Scrollable Content                         */
+    /* ═══════════════════════════════════════════ */
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: calc(20px + var(--safe-bottom));
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Setup Screen                               */
+    /* ═══════════════════════════════════════════ */
+    #setup-screen {
+      justify-content: center;
+      align-items: center;
+      padding: 32px 24px;
+    }
+    .setup-container {
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+    }
+    .setup-icon {
+      font-size: 56px;
+      margin-bottom: 16px;
+      animation: float 3s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+    .setup-title {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 6px;
+    }
+    .setup-desc {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      line-height: 1.6;
+    }
+    .setup-field {
+      text-align: left;
+      margin-bottom: 16px;
+    }
+    .setup-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      display: block;
+    }
+    .setup-input {
+      width: 100%;
+      padding: 14px 16px;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 14px;
+      font-family: 'Inter', sans-serif;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .setup-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .setup-input::placeholder { color: var(--text-muted); }
+    .setup-input.readonly {
+      background: var(--bg-secondary);
+      color: var(--text-muted);
+    }
+    .setup-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+    .setup-btn {
+      width: 100%;
+      padding: 15px;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, #2962FF 0%, #448AFF 100%);
+      color: white;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      box-shadow: 0 4px 14px rgba(41, 98, 255, 0.3);
+      margin-top: 8px;
+    }
+    .setup-btn:active {
+      transform: scale(0.97);
+      box-shadow: 0 2px 8px rgba(41, 98, 255, 0.2);
+    }
+    .setup-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .setup-error {
+      color: var(--red);
+      font-size: 13px;
+      margin-top: 12px;
+      display: none;
+    }
+    .setup-steps {
+      text-align: left;
+      margin-top: 28px;
+      padding: 16px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-light);
+    }
+    .setup-steps h4 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+    .setup-steps ol {
+      padding-left: 18px;
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+    .setup-steps code {
+      background: var(--bg-card);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* List Screen                                */
+    /* ═══════════════════════════════════════════ */
+    .section-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      padding: 18px 20px 8px;
+    }
+    .session-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 20px;
+      cursor: pointer;
+      transition: background 0.2s;
+      border-bottom: 1px solid var(--border-light);
+      min-height: 68px;
+    }
+    .session-card:active {
+      background: var(--accent-light);
+    }
+    .session-icon {
+      font-size: 28px;
+      flex-shrink: 0;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: var(--bg-secondary);
+    }
+    .session-icon.active { background: var(--accent-light); }
+    .session-icon.win { background: var(--green-bg); }
+    .session-icon.loss { background: var(--red-bg); }
+    .session-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .session-title {
+      font-size: 15px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--text);
+      letter-spacing: -0.2px;
+    }
+    .session-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .session-pnl {
+      font-size: 15px;
+      font-weight: 700;
+      flex-shrink: 0;
+      letter-spacing: -0.3px;
+    }
+    .session-pnl.pos { color: var(--green); }
+    .session-pnl.neg { color: var(--red); }
+    .session-arrow {
+      color: var(--text-muted);
+      font-size: 18px;
+      flex-shrink: 0;
+      opacity: 0.5;
+    }
+
+    /* Empty state */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 32px;
+      text-align: center;
+    }
+    .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.6; }
+    .empty-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+    .empty-desc { font-size: 14px; color: var(--text-muted); }
+
+    /* Loading skeleton */
+    .skeleton {
+      padding: 14px 20px;
+      display: flex;
+      gap: 14px;
+      align-items: center;
+    }
+    .skeleton-circle {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--border-light) 50%, var(--bg-secondary) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+    }
+    .skeleton-lines { flex: 1; }
+    .skeleton-line {
+      height: 12px;
+      border-radius: 6px;
+      background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--border-light) 50%, var(--bg-secondary) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      margin-bottom: 8px;
+    }
+    .skeleton-line:last-child { width: 60%; margin-bottom: 0; }
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Detail Screen                              */
+    /* ═══════════════════════════════════════════ */
+    .summary-card {
+      margin: 16px;
+      padding: 18px;
+      background: var(--bg-card);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
+    }
+    .summary-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .summary-result-icon { font-size: 32px; }
+    .summary-result-text {
+      flex: 1;
+    }
+    .summary-direction {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .summary-symbol {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .summary-pnl {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+    .summary-pnl.pos { color: var(--green); }
+    .summary-pnl.neg { color: var(--red); }
+    .summary-details {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .summary-detail-item {
+      padding: 10px 12px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+    }
+    .summary-detail-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .summary-detail-value {
+      font-size: 15px;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+    .summary-note {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-light);
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .summary-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+    .summary-action-tag {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: var(--accent-light);
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* Chat Messages */
+    .messages-section {
+      padding: 8px 16px;
+    }
+    .msg {
+      margin-bottom: 16px;
+    }
+    .msg-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .msg-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .msg-avatar.user { background: var(--accent-light); }
+    .msg-avatar.ai { background: var(--bg-secondary); }
+    .msg-role {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .msg-bubble {
+      padding: 14px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      line-height: 1.65;
+      border: 1px solid var(--border-light);
+    }
+    .msg-bubble.user {
+      background: var(--bg-user-bubble);
+      border-color: transparent;
+    }
+    .msg-bubble.ai {
+      background: var(--bg-ai-bubble);
+    }
+
+    /* Markdown inside bubbles */
+    .msg-bubble h1, .msg-bubble h2, .msg-bubble h3, .msg-bubble h4 {
+      margin-top: 16px;
+      margin-bottom: 8px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      line-height: 1.3;
+    }
+    .msg-bubble h1 { font-size: 18px; }
+    .msg-bubble h2 { font-size: 16px; }
+    .msg-bubble h3 { font-size: 15px; }
+    .msg-bubble h4 { font-size: 14px; }
+    .msg-bubble h1:first-child, .msg-bubble h2:first-child,
+    .msg-bubble h3:first-child, .msg-bubble h4:first-child { margin-top: 0; }
+    .msg-bubble p { margin-bottom: 8px; }
+    .msg-bubble p:last-child { margin-bottom: 0; }
+    .msg-bubble ul, .msg-bubble ol {
+      margin-bottom: 8px;
+      padding-left: 20px;
+    }
+    .msg-bubble li { margin-bottom: 4px; }
+    .msg-bubble strong { font-weight: 700; }
+    .msg-bubble em { font-style: italic; }
+    .msg-bubble code {
+      background: var(--bg-secondary);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      font-family: 'SF Mono', 'Cascadia Code', monospace;
+    }
+    .msg-bubble pre {
+      background: var(--bg-secondary);
+      padding: 12px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 13px;
+      margin-bottom: 8px;
+      border: 1px solid var(--border);
+    }
+    .msg-bubble pre code {
+      background: none;
+      border: none;
+      padding: 0;
+    }
+    .msg-bubble hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 14px 0;
+    }
+    .msg-bubble table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .msg-bubble th, .msg-bubble td {
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      text-align: left;
+    }
+    .msg-bubble th {
+      background: var(--bg-secondary);
+      font-weight: 600;
+    }
+    .msg-bubble blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      margin: 8px 0;
+      color: var(--text-secondary);
+    }
+
+    /* RSI Wave HTML Container */
+    .rsi-wave-container {
+      margin-bottom: 12px;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .rsi-wave-container iframe {
+      width: 100%;
+      height: 350px;
+      border: none;
+      display: block;
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Toast / Status bar                         */
+    /* ═══════════════════════════════════════════ */
+    .toast {
+      position: fixed;
+      bottom: calc(24px + var(--safe-bottom));
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: var(--text);
+      color: var(--bg);
+      padding: 12px 24px;
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 500;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Settings Button in Detail                  */
+    /* ═══════════════════════════════════════════ */
+    .settings-link {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 14px;
+      margin: 16px 20px;
+      border-radius: var(--radius-sm);
+      border: 1px dashed var(--border);
+      color: var(--text-muted);
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .settings-link:active {
+      background: var(--bg-secondary);
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 0 20px;
+    }
+
+    /* Status badge */
+    .status-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 20px;
+      display: inline-block;
+    }
+    .status-badge.active {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+    .status-badge.closed {
+      background: var(--bg-secondary);
+      color: var(--text-muted);
+    }
+
+    /* Pull to refresh indicator */
+    .refresh-indicator {
+      text-align: center;
+      padding: 12px;
+      font-size: 13px;
+      color: var(--text-muted);
+      display: none;
+    }
+    .refresh-indicator.visible { display: block; }
+
+    /* Last updated */
+    .last-updated {
+      text-align: center;
+      padding: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════ SETUP SCREEN ═══════════ -->
+  <div id="setup-screen" class="screen">
+    <div class="setup-container">
+      <div class="setup-icon">◈</div>
+      <div class="setup-title">TradeAI 모바일</div>
+      <div class="setup-desc">스마트폰에서 거래 분석 내역을 열람합니다.<br>Supabase 연결 설정이 필요합니다.</div>
+
+      <div class="setup-field">
+        <label class="setup-label">Supabase URL</label>
+        <input id="setup-url" class="setup-input readonly" type="text"
+               value="https://gqmjakklasdrromjetmo.supabase.co" readonly>
+        <div class="setup-hint">프로젝트 URL (자동 설정됨)</div>
+      </div>
+
+      <div class="setup-field">
+        <label class="setup-label">Supabase Anon Key</label>
+        <input id="setup-key" class="setup-input" type="password"
+               placeholder="eyJhbGciOiJI...">
+        <div class="setup-hint">Supabase 대시보드 → Settings → API → Project API keys → <code>anon</code> <code>public</code></div>
+      </div>
+
+      <button id="setup-submit" class="setup-btn" onclick="saveSetup()">연결하기</button>
+      <div id="setup-error" class="setup-error"></div>
+
+      <div class="setup-steps">
+        <h4>🔑 Anon Key 찾는 방법</h4>
+        <ol>
+          <li><a href="https://supabase.com/dashboard" target="_blank" style="color:var(--accent)">supabase.com/dashboard</a> 접속</li>
+          <li>프로젝트 선택</li>
+          <li>왼쪽 메뉴 → <strong>Settings</strong> → <strong>API</strong></li>
+          <li><strong>Project API keys</strong> → <code>anon</code> <code>public</code> 복사</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ LIST SCREEN ═══════════ -->
+  <div id="list-screen" class="screen hidden">
+    <div class="header">
+      <div>
+        <div class="header-title">◈ TradeAI</div>
+        <div class="header-subtitle" id="list-subtitle">모바일 뷰어</div>
+      </div>
+      <button class="header-btn" onclick="loadSessions()" title="새로고침" id="refresh-btn">🔄</button>
+      <button class="header-btn" onclick="showSetup()" title="설정">⚙️</button>
+    </div>
+    <div class="content" id="list-content">
+      <div id="list-loading">
+        <div class="skeleton"><div class="skeleton-circle"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+        <div class="skeleton"><div class="skeleton-circle"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+        <div class="skeleton"><div class="skeleton-circle"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+      </div>
+      <div id="list-body"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ DETAIL SCREEN ═══════════ -->
+  <div id="detail-screen" class="screen hidden">
+    <div class="header">
+      <button class="header-btn" onclick="showList()" title="뒤로">←</button>
+      <div class="header-title" id="detail-title">세션</div>
+      <button class="header-btn" onclick="refreshDetail()" title="새로고침">🔄</button>
+    </div>
+    <div class="content" id="detail-content"></div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <!-- Marked.js for Markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <script>
+    /* ═══════════════════════════════════════════ */
+    /* Configuration & State                      */
+    /* ═══════════════════════════════════════════ */
+    const SUPABASE_URL = 'https://gqmjakklasdrromjetmo.supabase.co';
+    const STORAGE_KEY = 'tradeai_mobile_config';
+    let CONFIG = loadConfig();
+    let currentSessions = [];
+    let currentDetailId = null;
+
+    function loadConfig() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+      } catch { return {}; }
+    }
+    function saveConfig(cfg) {
+      CONFIG = cfg;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Supabase REST API                          */
+    /* ═══════════════════════════════════════════ */
+    function apiHeaders() {
+      return {
+        'apikey': CONFIG.anonKey,
+        'Authorization': `Bearer ${CONFIG.anonKey}`,
+        'Content-Type': 'application/json',
+      };
+    }
+
+    async function fetchSessions() {
+      const url = `${SUPABASE_URL}/rest/v1/trade_sessions?select=id,symbol,interval,status,created_at,closed_at,summary&order=created_at.desc`;
+      const resp = await fetch(url, { headers: apiHeaders() });
+      if (!resp.ok) throw new Error(`API Error: ${resp.status}`);
+      return await resp.json();
+    }
+
+    async function fetchSessionDetail(id) {
+      const url = `${SUPABASE_URL}/rest/v1/trade_sessions?id=eq.${encodeURIComponent(id)}&select=*`;
+      const resp = await fetch(url, { headers: apiHeaders() });
+      if (!resp.ok) throw new Error(`API Error: ${resp.status}`);
+      const rows = await resp.json();
+      if (!rows.length) throw new Error('세션을 찾을 수 없습니다');
+      return rows[0];
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Screen Navigation                          */
+    /* ═══════════════════════════════════════════ */
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(s => {
+        if (s.id === id) {
+          s.classList.remove('hidden', 'hidden-left');
+        } else if (s.id === 'list-screen' && id === 'detail-screen') {
+          s.classList.remove('hidden');
+          s.classList.add('hidden-left');
+        } else {
+          s.classList.add('hidden');
+          s.classList.remove('hidden-left');
+        }
+      });
+    }
+
+    function showSetup() {
+      document.getElementById('setup-key').value = CONFIG.anonKey || '';
+      showScreen('setup-screen');
+    }
+
+    function showList() {
+      showScreen('list-screen');
+    }
+
+    function showDetail(id) {
+      currentDetailId = id;
+      showScreen('detail-screen');
+      loadDetail(id);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Setup                                      */
+    /* ═══════════════════════════════════════════ */
+    async function saveSetup() {
+      const key = document.getElementById('setup-key').value.trim();
+      const errEl = document.getElementById('setup-error');
+      const btn = document.getElementById('setup-submit');
+
+      if (!key) {
+        errEl.textContent = 'Anon Key를 입력해주세요';
+        errEl.style.display = 'block';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = '연결 테스트 중...';
+      errEl.style.display = 'none';
+
+      try {
+        // Test connection
+        const testUrl = `${SUPABASE_URL}/rest/v1/trade_sessions?select=id&limit=1`;
+        const resp = await fetch(testUrl, {
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${key}`,
+          }
+        });
+        if (!resp.ok) {
+          const body = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${body.substring(0, 100)}`);
+        }
+
+        saveConfig({ anonKey: key });
+        showScreen('list-screen');
+        loadSessions();
+        showToast('✅ 연결 성공!');
+      } catch (e) {
+        errEl.textContent = `연결 실패: ${e.message}`;
+        errEl.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '연결하기';
+      }
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Session List                               */
+    /* ═══════════════════════════════════════════ */
+    async function loadSessions() {
+      const body = document.getElementById('list-body');
+      const loading = document.getElementById('list-loading');
+
+      loading.style.display = 'block';
+      body.innerHTML = '';
+
+      try {
+        const sessions = await fetchSessions();
+        currentSessions = sessions;
+        loading.style.display = 'none';
+
+        if (!sessions.length) {
+          body.innerHTML = `
+            <div class="empty-state">
+              <div class="empty-icon">📭</div>
+              <div class="empty-title">세션이 없습니다</div>
+              <div class="empty-desc">데스크탑에서 거래를 시작하면<br>여기에 표시됩니다</div>
+            </div>`;
+          return;
+        }
+
+        const active = sessions.filter(s => s.status === 'active');
+        const closed = sessions.filter(s => s.status === 'closed');
+
+        let html = '';
+
+        if (active.length) {
+          html += `<div class="section-label">📊 진행 중 (${active.length})</div>`;
+          active.forEach(s => { html += renderSessionCard(s); });
+        }
+
+        if (closed.length) {
+          html += `<div class="section-label">📋 거래 히스토리 (${closed.length})</div>`;
+          closed.forEach(s => { html += renderSessionCard(s); });
+        }
+
+        html += `<div class="last-updated">마지막 업데이트: ${new Date().toLocaleTimeString('ko-KR')}</div>`;
+        body.innerHTML = html;
+
+        // Update subtitle
+        document.getElementById('list-subtitle').textContent =
+          `${active.length}개 진행 · ${closed.length}개 완료`;
+
+      } catch (e) {
+        loading.style.display = 'none';
+        body.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">⚠️</div>
+            <div class="empty-title">로딩 실패</div>
+            <div class="empty-desc">${escapeHtml(e.message)}</div>
+          </div>
+          <div class="settings-link" onclick="showSetup()">⚙️ 연결 설정 확인</div>`;
+      }
+    }
+
+    function renderSessionCard(s) {
+      const summary = s.summary || {};
+      const sym = summary.symbol || s.symbol || '?';
+      const direction = summary.direction || '';
+      const result = summary.result || '';
+      const pnl = summary.pnl_percent;
+      const title = summary.title || `${sym} ${s.interval || ''}`;
+      const time = formatTime(s.closed_at || s.created_at);
+
+      let iconClass = '';
+      let icon = '📊';
+      if (s.status === 'active') {
+        icon = '📈';
+        iconClass = 'active';
+      } else if (result === '익절') {
+        icon = '✅';
+        iconClass = 'win';
+      } else if (result === '손절') {
+        icon = '❌';
+        iconClass = 'loss';
+      }
+
+      let pnlHtml = '';
+      if (pnl != null) {
+        const cls = pnl >= 0 ? 'pos' : 'neg';
+        const str = pnl >= 0 ? `+${pnl}%` : `${pnl}%`;
+        pnlHtml = `<div class="session-pnl ${cls}">${str}</div>`;
+      }
+
+      const meta = s.status === 'active'
+        ? `${s.interval || ''} · ${time}`
+        : `${direction} · ${time}`;
+
+      return `
+        <div class="session-card" onclick="showDetail('${escapeHtml(s.id)}')">
+          <div class="session-icon ${iconClass}">${icon}</div>
+          <div class="session-info">
+            <div class="session-title">${escapeHtml(title)}</div>
+            <div class="session-meta">${escapeHtml(meta)}</div>
+          </div>
+          ${pnlHtml}
+          <div class="session-arrow">›</div>
+        </div>`;
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Session Detail                             */
+    /* ═══════════════════════════════════════════ */
+    async function loadDetail(id) {
+      const content = document.getElementById('detail-content');
+      const titleEl = document.getElementById('detail-title');
+
+      content.innerHTML = `
+        <div class="skeleton"><div class="skeleton-circle"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+        <div class="skeleton"><div class="skeleton-circle"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>`;
+
+      try {
+        const session = await fetchSessionDetail(id);
+        const sym = session.symbol || '?';
+        const intv = session.interval || '';
+        titleEl.textContent = `${sym} ${intv}`;
+
+        let html = '';
+
+        // Summary card (if closed)
+        if (session.status === 'closed' && session.summary) {
+          html += renderSummaryCard(session.summary);
+        } else if (session.status === 'active') {
+          html += `<div style="padding:12px 16px"><span class="status-badge active">● 진행 중</span></div>`;
+        }
+
+        // Messages
+        const messages = session.messages || [];
+        if (messages.length) {
+          html += '<div class="messages-section">';
+          messages.forEach(msg => {
+            html += renderMessage(msg);
+          });
+          html += '</div>';
+        } else {
+          html += `
+            <div class="empty-state">
+              <div class="empty-icon">💬</div>
+              <div class="empty-title">대화 내역 없음</div>
+            </div>`;
+        }
+
+        content.innerHTML = html;
+
+        // Render RSI wave iframes
+        content.querySelectorAll('.rsi-wave-container').forEach(container => {
+          const htmlData = container.getAttribute('data-html');
+          if (htmlData) {
+            const iframe = document.createElement('iframe');
+            iframe.sandbox = 'allow-scripts';
+            container.appendChild(iframe);
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            doc.open();
+            doc.write(decodeURIComponent(htmlData));
+            doc.close();
+          }
+        });
+
+      } catch (e) {
+        content.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">⚠️</div>
+            <div class="empty-title">로딩 실패</div>
+            <div class="empty-desc">${escapeHtml(e.message)}</div>
+          </div>`;
+      }
+    }
+
+    function refreshDetail() {
+      if (currentDetailId) loadDetail(currentDetailId);
+    }
+
+    function renderSummaryCard(summary) {
+      const result = summary.result || '미확정';
+      const direction = summary.direction || '';
+      const sym = summary.symbol || '';
+      const pnl = summary.pnl_percent;
+      const entry = summary.entry_price;
+      const exit = summary.exit_price;
+      const note = summary.note || '';
+      const actions = summary.actions || [];
+
+      let resultIcon = '📊';
+      if (result === '익절') resultIcon = '✅';
+      else if (result === '손절') resultIcon = '❌';
+
+      let pnlHtml = '';
+      if (pnl != null) {
+        const cls = pnl >= 0 ? 'pos' : 'neg';
+        const str = pnl >= 0 ? `+${pnl}%` : `${pnl}%`;
+        pnlHtml = `<div class="summary-pnl ${cls}">${str}</div>`;
+      }
+
+      const fmt = (v) => {
+        if (v == null) return '-';
+        if (typeof v === 'number') return v.toLocaleString('ko-KR', { maximumFractionDigits: 1 });
+        return v;
+      };
+
+      let actionsHtml = '';
+      if (actions.length) {
+        actionsHtml = `<div class="summary-actions">${actions.map(a =>
+          `<span class="summary-action-tag">${escapeHtml(a)}</span>`).join('')}</div>`;
+      }
+
+      let noteHtml = note ? `<div class="summary-note">${escapeHtml(note)}</div>` : '';
+
+      return `
+        <div class="summary-card">
+          <div class="summary-header">
+            <div class="summary-result-icon">${resultIcon}</div>
+            <div class="summary-result-text">
+              <div class="summary-direction">${escapeHtml(direction)} · ${escapeHtml(result)}</div>
+              <div class="summary-symbol">${escapeHtml(sym)}</div>
+            </div>
+            ${pnlHtml}
+          </div>
+          <div class="summary-details">
+            <div class="summary-detail-item">
+              <div class="summary-detail-label">진입가</div>
+              <div class="summary-detail-value">${fmt(entry)}</div>
+            </div>
+            <div class="summary-detail-item">
+              <div class="summary-detail-label">종료가</div>
+              <div class="summary-detail-value">${fmt(exit)}</div>
+            </div>
+          </div>
+          ${actionsHtml}
+          ${noteHtml}
+        </div>`;
+    }
+
+    function renderMessage(msg) {
+      const role = msg.role || 'user';
+      const content = msg.content || '';
+      const rsiHtml = msg.rsi_wave_html || '';
+
+      const isUser = role === 'user';
+      const avatar = isUser ? '👤' : '🤖';
+      const roleLabel = isUser ? 'You' : 'AI';
+      const bubbleClass = isUser ? 'user' : 'ai';
+      const avatarClass = isUser ? 'user' : 'ai';
+
+      // Shorten quick analysis prompts for user
+      let displayContent = content;
+      if (isUser) {
+        displayContent = shortenPrompt(content);
+      }
+
+      // Render markdown for AI responses
+      let renderedContent;
+      if (isUser) {
+        renderedContent = escapeHtml(displayContent);
+      } else {
+        try {
+          renderedContent = marked.parse(displayContent);
+        } catch {
+          renderedContent = escapeHtml(displayContent);
+        }
+      }
+
+      // RSI Wave HTML
+      let rsiContainer = '';
+      if (rsiHtml) {
+        const encoded = encodeURIComponent(rsiHtml);
+        rsiContainer = `<div class="rsi-wave-container" data-html="${encoded}"></div>`;
+      }
+
+      return `
+        <div class="msg">
+          <div class="msg-header">
+            <div class="msg-avatar ${avatarClass}">${avatar}</div>
+            <div class="msg-role">${roleLabel}</div>
+          </div>
+          ${rsiContainer}
+          <div class="msg-bubble ${bubbleClass}">${renderedContent}</div>
+        </div>`;
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Utilities                                  */
+    /* ═══════════════════════════════════════════ */
+    const PROMPT_MAP = {
+      '[종합 차트 분석]': '📊 종합 차트 분석',
+      '[매매 전략 수립]': '💡 매매 전략 분석',
+      '[지지/저항 & 매물대 분석]': '📐 지지/저항 & 매물대 분석',
+      '[추세 종합 판단]': '📈 추세 종합 판단',
+    };
+
+    function shortenPrompt(text) {
+      const trimmed = text.trim();
+      for (const [tag, label] of Object.entries(PROMPT_MAP)) {
+        if (trimmed.startsWith(tag)) return label;
+      }
+      return text;
+    }
+
+    function formatTime(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        const now = new Date();
+        const isToday = d.toDateString() === now.toDateString();
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const isYesterday = d.toDateString() === yesterday.toDateString();
+
+        const time = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+        if (isToday) return `오늘 ${time}`;
+        if (isYesterday) return `어제 ${time}`;
+        const month = d.getMonth() + 1;
+        const day = d.getDate();
+        return `${month}/${day} ${time}`;
+      } catch {
+        return iso;
+      }
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* Initialization                             */
+    /* ═══════════════════════════════════════════ */
+    function init() {
+      // Configure marked
+      if (typeof marked !== 'undefined') {
+        marked.setOptions({
+          breaks: true,
+          gfm: true,
+        });
+      }
+
+      if (CONFIG.anonKey) {
+        showScreen('list-screen');
+        loadSessions();
+      } else {
+        showScreen('setup-screen');
+      }
+    }
+
+    // Handle back button
+    window.addEventListener('popstate', () => {
+      const detail = document.getElementById('detail-screen');
+      if (!detail.classList.contains('hidden')) {
+        showList();
+      }
+    });
+
+    // Push state when opening detail
+    const originalShowDetail = showDetail;
+    showDetail = function(id) {
+      history.pushState({ view: 'detail', id }, '', `#${id}`);
+      originalShowDetail(id);
+    };
+
+    // Handle Enter key in setup
+    document.getElementById('setup-key').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveSetup();
+    });
+
+    // Init
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "TradeAI 모바일",
+  "short_name": "TradeAI",
+  "description": "TradeAI 거래 분석 모바일 뷰어",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#FFFFF0",
+  "theme_color": "#2962FF",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "../pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "../pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
