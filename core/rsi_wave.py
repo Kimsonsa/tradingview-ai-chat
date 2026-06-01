@@ -91,13 +91,49 @@ RSI_WAVE_SYSTEM_PROMPT = """당신은 암호화폐 기술적 분석 전문가입
 7. ADX 낮을 때 (횡보장) RSI 사이클 전략이 더 유효
 8. VWAP/EMA 구조 + 거래량으로 반드시 필터링
 
-━━━ 다이버전스 3단계 분류 (핵심) ━━━
+━━━ RSI 다이버전스 4유형 분류 ━━━
+• **정규 하락 다이버전스**: 가격 HH + RSI LH → 상승 모멘텀 약화, 고점 반전 경고
+• **히든 하락 다이버전스**: 가격 LH + RSI HH → 하락 추세 지속 신호 (반전이 아닌 지속!)
+• **정규 상승 다이버전스**: 가격 LL + RSI HL → 하락 모멘텀 약화, 저점 반전 경고
+• **히든 상승 다이버전스**: 가격 HL + RSI LL → 상승 추세 지속 신호 (반전이 아닌 지속!)
+
+핵심 구분:
+- 정규 다이버전스 = 추세 반전 경고
+- 히든 다이버전스 = 추세 지속 신호
+
+━━━ 다이버전스 3단계 분류 ━━━
 • **후보(CANDIDATE)**: 가격 LL + RSI HL (또는 가격 HH + RSI LH) → 반등/하락 가능성
 • **확정(CONFIRMED)**: 후보 + EMA20 회복 + VWAP 회복 + RSI 50 회복 → 추세 전환 가능
 • **실패(FAILED)**: 후보 후 RSI 50~55 실패 + VWAP 실패 + 저점 재이탈 → 하락 지속
 
 ⚠️ 다이버전스 후보만으로 롱/숏 확정 금지!
 반드시 VWAP/EMA20/RSI50 회복 여부를 확인 후 판정.
+
+━━━ 거래량 다이버전스 (종합 분석) ━━━
+거래량은 방향성이 없는 원시 데이터이므로 OBV와 함께 종합 분석.
+
+■ 고점 기준:
+  가격 HH + 거래량↑ = 상승 확인, 추세 지속
+  가격 HH + 거래량↓ = 🔻 하락 다이버전스 (상승 추진력 약화) ★핵심★
+  가격 LH + 거래량↑ = 🔻 약세 흡수/분산 (매도 우위, 저항 흡수 실패)
+  가격 LH + 거래량↓ = 약한 반등, 관심 감소
+
+■ 저점 기준:
+  가격 LL + 거래량↑ = 🔻 하락 확인 (매도 압력 증가). 단, 투매 클라이맥스 가능성 별도
+  가격 LL + 거래량↓ = 🔺 상승 다이버전스 (매도세 약화) ★핵심★
+  가격 HL + 거래량↓ = 🔺 건강한 눌림 (매도 압력 감소)
+  가격 HL + 거래량↑ = ⚠️ 매수 방어 강함 or 변동성 증가 (캔들 확인 필요)
+
+⚠️ 주의: 저점 갱신 + 거래량 증가는 상승 다이버전스가 아님! 기본은 하락 확인.
+  투매 클라이맥스(긴 아래꼬리 + 종가 회복 + 이후 저점 방어)일 때만 반등 후보.
+
+━━━ OBV 다이버전스 (최우선) ━━━
+OBV는 매수/매도 방향이 포함되어 raw volume보다 다이버전스 판단이 정확.
+  가격 HH + OBV LH = 하락 다이버전스 (매수 주도 약화)
+  가격 LL + OBV HL = 상승 다이버전스 (매도 주도 약화)
+
+다이버전스 우선순위: OBV > RSI > raw volume
+동일 방향 신호가 겹치면 확신도 상승, 충돌하면 OBV를 우선.
 
 ━━━ 시장 레짐 ━━━
 • UP_TREND: 강한 상승 (ADX≥20, EMA 정배열, +DI 우위)
@@ -394,10 +430,10 @@ def determine_arrow_direction(rsi_values):
 
 # ═══════════════════════════════════════════════
 # 다이버전스 분석 (v2)
-# ═══════════════════════════════════════════════
+# ═══════════════════════════════════════════
 
 def detect_divergence(closes, rsi_values, lookback=30):
-    """최근 N봉에서 다이버전스 감지 (기존 호환)
+    """최근 N봉에서 다이버전스 감지 (기존 호환 — 히든 다이버전스 포함)
 
     Returns:
         str | None: 다이버전스 유형 문자열 또는 None
@@ -405,11 +441,13 @@ def detect_divergence(closes, rsi_values, lookback=30):
     result = detect_divergence_v2(closes, rsi_values, lookback)
     if result is None:
         return None
-    if result["type"] == "BEAR_DIV_CANDIDATE":
-        return "🔻 하락 다이버전스"
-    elif result["type"] == "BULL_DIV_CANDIDATE":
-        return "🔺 상승 다이버전스"
-    return None
+    type_labels = {
+        "BEAR_DIV_CANDIDATE": "🔻 하락 다이버전스",
+        "BULL_DIV_CANDIDATE": "🔺 상승 다이버전스",
+        "HIDDEN_BEAR_DIV": "🔻 히든 하락 다이버전스",
+        "HIDDEN_BULL_DIV": "🔺 히든 상승 다이버전스",
+    }
+    return type_labels.get(result["type"])
 
 
 def detect_divergence_v2(closes, rsi_values, lookback=30):
@@ -472,7 +510,392 @@ def detect_divergence_v2(closes, rsi_values, lookback=30):
                 "label": "🔺 상승 다이버전스 후보",
             }
 
+    # 히든 하락 다이버전스: 가격 더 낮은 고점 + RSI 더 높은 고점 (하락 추세 지속)
+    if len(peaks_price) >= 2 and len(peaks_rsi) >= 2:
+        if (peaks_price[-1][1] < peaks_price[-2][1] and
+                peaks_rsi[-1][1] > peaks_rsi[-2][1]):
+            return {
+                "type": "HIDDEN_BEAR_DIV",
+                "price_high_1": peaks_price[-2][1],
+                "price_high_2": peaks_price[-1][1],
+                "rsi_high_1": round(peaks_rsi[-2][1], 1),
+                "rsi_high_2": round(peaks_rsi[-1][1], 1),
+                "label": "🔻 히든 하락 다이버전스 (하락 지속)",
+            }
+
+    # 히든 상승 다이버전스: 가격 더 높은 저점 + RSI 더 낮은 저점 (상승 추세 지속)
+    if len(troughs_price) >= 2 and len(troughs_rsi) >= 2:
+        if (troughs_price[-1][1] > troughs_price[-2][1] and
+                troughs_rsi[-1][1] < troughs_rsi[-2][1]):
+            return {
+                "type": "HIDDEN_BULL_DIV",
+                "price_low_1": troughs_price[-2][1],
+                "price_low_2": troughs_price[-1][1],
+                "rsi_low_1": round(troughs_rsi[-2][1], 1),
+                "rsi_low_2": round(troughs_rsi[-1][1], 1),
+                "label": "🔺 히든 상승 다이버전스 (상승 지속)",
+            }
+
     return None
+
+
+def _find_local_extremes(values, lookback=30, pivot_range=2):
+    """시계열에서 로컬 고점/저점 피봇 찾기 (범용 헬퍼)
+
+    Args:
+        values: 시계열 데이터
+        lookback: 최근 N개 데이터만 사용
+        pivot_range: 좌우 비교 범위
+
+    Returns:
+        (peaks, troughs): [(index, value), ...]
+    """
+    if len(values) < lookback:
+        recent = list(values)
+    else:
+        recent = values[-lookback:]
+
+    peaks = []
+    troughs = []
+
+    for i in range(pivot_range, len(recent) - pivot_range):
+        is_peak = all(recent[i] > recent[i - j] and recent[i] > recent[i + j]
+                      for j in range(1, pivot_range + 1))
+        is_trough = all(recent[i] < recent[i - j] and recent[i] < recent[i + j]
+                        for j in range(1, pivot_range + 1))
+        if is_peak:
+            peaks.append((i, recent[i]))
+        if is_trough:
+            troughs.append((i, recent[i]))
+
+    return peaks, troughs
+
+
+def detect_volume_divergence(closes, volumes, lookback=30):
+    """거래량 다이버전스 감지 — 가격과 거래량의 관계 8가지 패턴 분류
+
+    거래량 다이버전스 규칙:
+    고점 기준:
+      가격 HH + 거래량↑ = 상승 확인 (추세 지속)
+      가격 HH + 거래량↓ = 하락 다이버전스 (상승 힘 약화) ★
+      가격 LH + 거래량↑ = 약세 흡수/분산 (매도 우위)
+      가격 LH + 거래량↓ = 약한 반등, 관심 감소
+    저점 기준:
+      가격 LL + 거래량↑ = 하락 확인 (매도 압력 증가)
+      가격 LL + 거래량↓ = 상승 다이버전스 (매도세 약화) ★
+      가격 HL + 거래량↓ = 건강한 눌림 (매도 압력 감소)
+      가격 HL + 거래량↑ = 매수 방어 강함 or 변동성 증가
+
+    Returns:
+        dict | None: {type, pattern, label, detail, bias, strength}
+    """
+    if len(closes) < lookback or len(volumes) < lookback:
+        return None
+
+    price_peaks, price_troughs = _find_local_extremes(closes, lookback)
+
+    recent_closes = closes[-lookback:] if len(closes) >= lookback else list(closes)
+    recent_vols = volumes[-lookback:] if len(volumes) >= lookback else list(volumes)
+
+    def _get_vol_at_pivot(idx, data, window=2):
+        start = max(0, idx - window)
+        end = min(len(data), idx + window + 1)
+        return np.mean(data[start:end])
+
+    results = []
+
+    # ═══ 고점 기준 분석 ═══
+    if len(price_peaks) >= 2:
+        p1_idx, p1_val = price_peaks[-2]
+        p2_idx, p2_val = price_peaks[-1]
+        v1 = _get_vol_at_pivot(p1_idx, recent_vols)
+        v2 = _get_vol_at_pivot(p2_idx, recent_vols)
+
+        price_hh = p2_val > p1_val  # 고점 상승
+        vol_up = v2 > v1            # 거래량 상승
+
+        if price_hh and not vol_up:
+            # 가격 HH + 거래량↓ = 하락 다이버전스 (상승 힘 약화)
+            results.append({
+                "type": "VOL_BEAR_DIV",
+                "pattern": "HH_VOL_DOWN",
+                "label": "🔻 거래량 하락 다이버전스",
+                "detail": f"가격 고점↑({p1_val:.1f}→{p2_val:.1f}) + 거래량↓ — 상승 추진력 약화",
+                "bias": "BEARISH",
+                "strength": 8,
+                "price_1": p1_val, "price_2": p2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+        elif price_hh and vol_up:
+            # 가격 HH + 거래량↑ = 상승 확인
+            results.append({
+                "type": "VOL_BULL_CONFIRM",
+                "pattern": "HH_VOL_UP",
+                "label": "✅ 거래량 상승 확인",
+                "detail": f"가격 고점↑({p1_val:.1f}→{p2_val:.1f}) + 거래량↑ — 추세 지속",
+                "bias": "BULLISH",
+                "strength": 5,
+                "price_1": p1_val, "price_2": p2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+        elif not price_hh and vol_up:
+            # 가격 LH + 거래량↑ = 약세 흡수/분산
+            results.append({
+                "type": "VOL_BEAR_ABSORPTION",
+                "pattern": "LH_VOL_UP",
+                "label": "🔻 약세 흡수/분산",
+                "detail": f"가격 고점↓({p1_val:.1f}→{p2_val:.1f}) + 거래량↑ — 매도 우위/저항 흡수 실패",
+                "bias": "BEARISH",
+                "strength": 6,
+                "price_1": p1_val, "price_2": p2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+        else:
+            # 가격 LH + 거래량↓ = 약한 반등, 관심 감소
+            results.append({
+                "type": "VOL_WEAK_BOUNCE",
+                "pattern": "LH_VOL_DOWN",
+                "label": "⚪ 약한 반등",
+                "detail": f"가격 고점↓({p1_val:.1f}→{p2_val:.1f}) + 거래량↓ — 관심 감소",
+                "bias": "NEUTRAL",
+                "strength": 3,
+                "price_1": p1_val, "price_2": p2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+
+    # ═══ 저점 기준 분석 ═══
+    if len(price_troughs) >= 2:
+        t1_idx, t1_val = price_troughs[-2]
+        t2_idx, t2_val = price_troughs[-1]
+        v1 = _get_vol_at_pivot(t1_idx, recent_vols)
+        v2 = _get_vol_at_pivot(t2_idx, recent_vols)
+
+        price_ll = t2_val < t1_val  # 저점 하락
+        vol_up = v2 > v1            # 거래량 상승
+
+        if price_ll and vol_up:
+            # 가격 LL + 거래량↑ = 하락 확인 (매도 압력 증가)
+            results.append({
+                "type": "VOL_BEAR_CONFIRM",
+                "pattern": "LL_VOL_UP",
+                "label": "🔻 하락 확인 (매도 압력 증가)",
+                "detail": f"가격 저점↓({t1_val:.1f}→{t2_val:.1f}) + 거래량↑ — 하락 지속. 투매 클라이맥스 가능성 별도 확인",
+                "bias": "BEARISH",
+                "strength": 7,
+                "price_1": t1_val, "price_2": t2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+        elif price_ll and not vol_up:
+            # 가격 LL + 거래량↓ = 상승 다이버전스 (매도세 약화)
+            results.append({
+                "type": "VOL_BULL_DIV",
+                "pattern": "LL_VOL_DOWN",
+                "label": "🔺 거래량 상승 다이버전스",
+                "detail": f"가격 저점↓({t1_val:.1f}→{t2_val:.1f}) + 거래량↓ — 매도세 약화",
+                "bias": "BULLISH",
+                "strength": 8,
+                "price_1": t1_val, "price_2": t2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+        elif not price_ll and not vol_up:
+            # 가격 HL + 거래량↓ = 건강한 눌림
+            results.append({
+                "type": "VOL_HEALTHY_PULLBACK",
+                "pattern": "HL_VOL_DOWN",
+                "label": "🔺 건강한 눌림",
+                "detail": f"가격 저점↑({t1_val:.1f}→{t2_val:.1f}) + 거래량↓ — 매도 압력 감소",
+                "bias": "BULLISH",
+                "strength": 5,
+                "price_1": t1_val, "price_2": t2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+        else:
+            # 가격 HL + 거래량↑ = 매수 방어 강함 or 변동성 증가
+            results.append({
+                "type": "VOL_DEFENSE_OR_VOLATILITY",
+                "pattern": "HL_VOL_UP",
+                "label": "⚠️ 매수 방어/변동성",
+                "detail": f"가격 저점↑({t1_val:.1f}→{t2_val:.1f}) + 거래량↑ — 매수 방어 강함 or 변동성 증가, 캔들 확인 필요",
+                "bias": "NEUTRAL",
+                "strength": 4,
+                "price_1": t1_val, "price_2": t2_val,
+                "vol_1": round(v1, 0), "vol_2": round(v2, 0),
+            })
+
+    # 가장 강한 신호 반환 (bias가 있는 것 우선)
+    if not results:
+        return None
+
+    # BEARISH/BULLISH 중 가장 강한 것 반환
+    biased = [r for r in results if r["bias"] != "NEUTRAL"]
+    if biased:
+        return max(biased, key=lambda x: x["strength"])
+    return results[0]
+
+
+def detect_obv_divergence(closes, obv_series, lookback=30):
+    """OBV 다이버전스 감지 — raw volume보다 정확한 방향성 거래량 분석
+
+    OBV는 매수/매도 방향성이 포함되어 있어 다이버전스 판단이 더 정확함.
+      가격 HH + OBV LH = 하락 다이버전스 (매수 주도 약화)
+      가격 LL + OBV HL = 상승 다이버전스 (매도 주도 약화)
+
+    Returns:
+        dict | None: {type, label, detail, price/obv 값들}
+    """
+    if len(closes) < lookback or len(obv_series) < lookback:
+        return None
+
+    price_peaks, price_troughs = _find_local_extremes(closes, lookback)
+    obv_peaks, obv_troughs = _find_local_extremes(obv_series, lookback)
+
+    recent_obv = obv_series[-lookback:] if len(obv_series) >= lookback else list(obv_series)
+
+    # OBV 값을 가격 피봇 인덱스에서 가져오기
+    def _obv_at(idx):
+        if idx < len(recent_obv):
+            return recent_obv[idx]
+        return recent_obv[-1]
+
+    # ═══ 하락 다이버전스: 가격 HH + OBV LH ═══
+    if len(price_peaks) >= 2:
+        p1_idx, p1_val = price_peaks[-2]
+        p2_idx, p2_val = price_peaks[-1]
+        obv1 = _obv_at(p1_idx)
+        obv2 = _obv_at(p2_idx)
+
+        if p2_val > p1_val and obv2 < obv1:
+            return {
+                "type": "OBV_BEAR_DIV",
+                "label": "🔻 OBV 하락 다이버전스",
+                "detail": f"가격 HH({p1_val:.1f}→{p2_val:.1f}) + OBV LH — 매수 주도 약화",
+                "bias": "BEARISH",
+                "price_1": p1_val, "price_2": p2_val,
+                "obv_1": round(obv1, 0), "obv_2": round(obv2, 0),
+            }
+
+    # ═══ 상승 다이버전스: 가격 LL + OBV HL ═══
+    if len(price_troughs) >= 2:
+        t1_idx, t1_val = price_troughs[-2]
+        t2_idx, t2_val = price_troughs[-1]
+        obv1 = _obv_at(t1_idx)
+        obv2 = _obv_at(t2_idx)
+
+        if t2_val < t1_val and obv2 > obv1:
+            return {
+                "type": "OBV_BULL_DIV",
+                "label": "🔺 OBV 상승 다이버전스",
+                "detail": f"가격 LL({t1_val:.1f}→{t2_val:.1f}) + OBV HL — 매도 주도 약화",
+                "bias": "BULLISH",
+                "price_1": t1_val, "price_2": t2_val,
+                "obv_1": round(obv1, 0), "obv_2": round(obv2, 0),
+            }
+
+    return None
+
+
+def synthesize_divergence(rsi_div, vol_div, obv_div):
+    """RSI + 거래량 + OBV 다이버전스 종합 판정
+
+    우선순위: OBV > RSI > raw volume
+    동일 방향 신호가 겹치면 확신도 상승, 충돌하면 우선순위 적용.
+
+    Returns:
+        dict: {
+            overall_bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL',
+            confidence: 'HIGH' | 'MEDIUM' | 'LOW',
+            rsi_div, vol_div, obv_div,  # 개별 결과
+            signals: [일치하는 신호들],
+            conflicts: [충돌하는 신호들],
+            summary: str  # 한줄 요약
+        }
+    """
+    bullish_signals = []
+    bearish_signals = []
+    all_signals = []
+
+    # RSI 다이버전스 분류
+    if rsi_div:
+        rsi_type = rsi_div.get("type", "")
+        if rsi_type in ("BULL_DIV_CANDIDATE", "HIDDEN_BULL_DIV"):
+            bullish_signals.append(("RSI", rsi_div["label"], 10))
+        elif rsi_type in ("BEAR_DIV_CANDIDATE", "HIDDEN_BEAR_DIV"):
+            bearish_signals.append(("RSI", rsi_div["label"], 10))
+        all_signals.append(f"RSI: {rsi_div['label']}")
+
+    # OBV 다이버전스 분류 (우선순위 최고)
+    if obv_div:
+        obv_bias = obv_div.get("bias", "NEUTRAL")
+        if obv_bias == "BULLISH":
+            bullish_signals.append(("OBV", obv_div["label"], 12))
+        elif obv_bias == "BEARISH":
+            bearish_signals.append(("OBV", obv_div["label"], 12))
+        all_signals.append(f"OBV: {obv_div['label']}")
+
+    # 거래량 다이버전스 분류
+    if vol_div:
+        vol_bias = vol_div.get("bias", "NEUTRAL")
+        if vol_bias == "BULLISH":
+            bullish_signals.append(("VOL", vol_div["label"], vol_div.get("strength", 5)))
+        elif vol_bias == "BEARISH":
+            bearish_signals.append(("VOL", vol_div["label"], vol_div.get("strength", 5)))
+        all_signals.append(f"거래량: {vol_div['label']}")
+
+    # 점수 합산
+    bull_score = sum(s[2] for s in bullish_signals)
+    bear_score = sum(s[2] for s in bearish_signals)
+
+    # 충돌 감지
+    conflicts = []
+    if bullish_signals and bearish_signals:
+        conflicts = [
+            f"상승: {', '.join(s[1] for s in bullish_signals)}",
+            f"하락: {', '.join(s[1] for s in bearish_signals)}",
+        ]
+
+    # 종합 판정
+    if bull_score > bear_score:
+        overall_bias = "BULLISH"
+        dominant = bullish_signals
+    elif bear_score > bull_score:
+        overall_bias = "BEARISH"
+        dominant = bearish_signals
+    else:
+        overall_bias = "NEUTRAL"
+        dominant = []
+
+    # 확신도
+    total_sources = len(bullish_signals) + len(bearish_signals)
+    if total_sources >= 3 and not conflicts:
+        confidence = "HIGH"
+    elif total_sources >= 2 and len(dominant) >= 2:
+        confidence = "MEDIUM"
+    elif total_sources >= 1:
+        confidence = "LOW"
+    else:
+        confidence = "NONE"
+
+    # 요약
+    if not all_signals:
+        summary = "다이버전스 미감지"
+    elif conflicts:
+        summary = f"⚠️ 신호 충돌 — {' vs '.join(conflicts)}"
+    else:
+        bias_label = {"BULLISH": "🔺 상승", "BEARISH": "🔻 하락", "NEUTRAL": "⚪ 중립"}
+        summary = f"{bias_label[overall_bias]} 종합 다이버전스 ({confidence}) — {' + '.join(all_signals)}"
+
+    return {
+        "overall_bias": overall_bias,
+        "confidence": confidence,
+        "bull_score": bull_score,
+        "bear_score": bear_score,
+        "rsi_div": rsi_div,
+        "vol_div": vol_div,
+        "obv_div": obv_div,
+        "signals": all_signals,
+        "conflicts": conflicts,
+        "summary": summary,
+    }
 
 
 def evaluate_divergence_confirmation(div_info, close, ema20, vwap, rsi, macd_hist, regime):
@@ -1054,6 +1477,19 @@ def determine_position(r):
         elif squeeze["type"] == "BULLISH_EXPANSION":
             long_score += 30
 
+    # 14) 거래량/OBV 종합 다이버전스 (NEW)
+    synth_div = r.get("synth_div") or {}
+    if synth_div.get("overall_bias") == "BULLISH":
+        long_score += synth_div.get("bull_score", 0)
+    elif synth_div.get("overall_bias") == "BEARISH":
+        long_score -= synth_div.get("bear_score", 0) // 2
+
+    # 15) 히든 다이버전스 (NEW)
+    if div_v2 and div_v2.get("type") == "HIDDEN_BULL_DIV":
+        long_score += 12  # 상승 추세 지속 신호
+    elif div_v2 and div_v2.get("type") == "HIDDEN_BEAR_DIV":
+        long_score -= 8  # 하락 지속 신호
+
     # ════════════════════════
     # 숏 점수 (0~100+)
     # ════════════════════════
@@ -1125,6 +1561,18 @@ def determine_position(r):
             short_score += 40  # 숏 강력 가산
         elif squeeze["type"] == "BULLISH_EXPANSION":
             short_score -= 50  # 숏 무효화
+
+    # 14) 거래량/OBV 종합 다이버전스 (NEW)
+    if synth_div.get("overall_bias") == "BEARISH":
+        short_score += synth_div.get("bear_score", 0)
+    elif synth_div.get("overall_bias") == "BULLISH":
+        short_score -= synth_div.get("bull_score", 0) // 2
+
+    # 15) 히든 다이버전스 (NEW)
+    if div_v2 and div_v2.get("type") == "HIDDEN_BEAR_DIV":
+        short_score += 12  # 하락 추세 지속 신호
+    elif div_v2 and div_v2.get("type") == "HIDDEN_BULL_DIV":
+        short_score -= 8  # 상승 지속 → 숏 감점
 
     # ════════════════════════
     # 최종 판정
@@ -1339,8 +1787,8 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
             # ── ADX ──
             adx, plus_di, minus_di = calc_adx(candles)
 
-            # ── OBV ──
-            obv, obv_ema = calc_obv(candles)
+            # ── OBV (시계열 포함) ──
+            obv, obv_ema, obv_series = calc_obv(candles, return_series=True)
 
             # ── VWAP ──
             vwap = calc_vwap(candles)
@@ -1372,6 +1820,12 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
 
             # ── 거래량 패턴 ──
             vol_pattern = analyze_volume_pattern(candles)
+
+            # ── 거래량 다이버전스 (NEW) ──
+            vol_div = detect_volume_divergence(closes, volumes)
+
+            # ── OBV 다이버전스 (NEW) ──
+            obv_div = detect_obv_divergence(closes, obv_series) if obv_series else None
 
             # ── 베어 플래그 ──
             bear_flag = detect_bear_flag(candles, rsi_vals, atr, e20, vwap)
@@ -1472,6 +1926,10 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "squeeze_expansion": squeeze_expansion,
                 "targets": targets,
                 "ema20_slope": round(ema20_slope, 3),
+                # ── v3 거래량/OBV 다이버전스 ──
+                "vol_div": vol_div,
+                "obv_div": obv_div,
+                "synth_div": synthesize_divergence(div_v2, vol_div, obv_div),
             }
 
             # 포지션 판정 (v2 점수 모델)
@@ -1924,6 +2382,18 @@ def generate_tf_cards(results):
         elif vol_pat.get("pattern") == "CONTINUATION":
             vol_pat_str = f" | 📊하락지속형"
 
+        # 거래량/OBV 종합 다이버전스 (NEW)
+        synth_div_str = ""
+        synth_div = r.get("synth_div")
+        if synth_div and synth_div.get("overall_bias") != "NEUTRAL":
+            synth_div_str = f"\n> 📊 **종합 다이버전스**: {synth_div['summary']}"
+        vol_div = r.get("vol_div")
+        if vol_div and vol_div.get("bias") != "NEUTRAL":
+            synth_div_str += f"\n> {vol_div['label']} — {vol_div['detail']}"
+        obv_div = r.get("obv_div")
+        if obv_div:
+            synth_div_str += f"\n> {obv_div['label']} — {obv_div['detail']}"
+
         # 롱/숏 점수
         long_s = r.get("long_score", 0)
         short_s = r.get("short_score", 0)
@@ -1963,7 +2433,7 @@ def generate_tf_cards(results):
 
 📍 **{r['cycle_desc']}** — {r['rsi_strategy_valid']}
 🎯 **{signal_label}** (롱:{long_s} / 숏:{short_s}){htf_str}
-📐 {rsi_tgt}{target_str}{div_str}{bear_flag_str}{squeeze_str}
+📐 {rsi_tgt}{target_str}{div_str}{bear_flag_str}{squeeze_str}{synth_div_str}
 
 ---
 """
@@ -2076,8 +2546,12 @@ def generate_summary_text(results):
             conflicts.append(f"⚠️ **{tf}: 베어 플래그** — {r['bear_flag']['detail']}")
         if r and r.get("borderline"):
             conflicts.append(f"⚠️ **{tf}**: {r['borderline']['msg']} — AI 판단 필요")
+        # 종합 다이버전스 (NEW)
+        synth = r.get("synth_div") if r else None
+        if synth and synth.get("overall_bias") != "NEUTRAL" and synth.get("confidence") in ("HIGH", "MEDIUM"):
+            conflicts.append(f"📊 **{tf} 종합 다이버전스**: {synth['summary']}")
 
-    summary = "### 📊 종합 판정 (v2)\n\n" + "\n".join(sections)
+    summary = "### 📊 종합 판정 (v3 — RSI+거래량+OBV)\n\n" + "\n".join(sections)
     if conflicts:
         summary += "\n\n" + "\n".join(conflicts)
 
@@ -2138,6 +2612,12 @@ def format_rsi_wave_for_ai(symbol, results):
             elif div_v2["type"] == "BEAR_DIV_CANDIDATE":
                 lines.append(f"   가격: {div_v2.get('price_high_1','?')} → {div_v2.get('price_high_2','?')}")
                 lines.append(f"   RSI: {div_v2.get('rsi_high_1','?')} → {div_v2.get('rsi_high_2','?')}")
+            elif div_v2["type"] == "HIDDEN_BEAR_DIV":
+                lines.append(f"   가격 고점: {div_v2.get('price_high_1','?')} → {div_v2.get('price_high_2','?')} (LH)")
+                lines.append(f"   RSI 고점: {div_v2.get('rsi_high_1','?')} → {div_v2.get('rsi_high_2','?')} (HH)")
+            elif div_v2["type"] == "HIDDEN_BULL_DIV":
+                lines.append(f"   가격 저점: {div_v2.get('price_low_1','?')} → {div_v2.get('price_low_2','?')} (HL)")
+                lines.append(f"   RSI 저점: {div_v2.get('rsi_low_1','?')} → {div_v2.get('rsi_low_2','?')} (LL)")
 
         # 실패한 다이버전스
         failed = r.get("failed_div")
@@ -2185,14 +2665,33 @@ def format_rsi_wave_for_ai(symbol, results):
         elif htf == "HTF_BULLISH":
             lines.append(f"✅ HTF 필터: 상위프레임 상승 → 롱 점수 가점")
 
+        # 거래량 다이버전스 (NEW)
+        vol_div_data = r.get("vol_div")
+        if vol_div_data:
+            lines.append(f"📊 거래량 다이버전스: {vol_div_data['label']} — {vol_div_data['detail']}")
+
+        # OBV 다이버전스 (NEW)
+        obv_div_data = r.get("obv_div")
+        if obv_div_data:
+            lines.append(f"📊 OBV 다이버전스: {obv_div_data['label']} — {obv_div_data['detail']}")
+
+        # 종합 다이버전스 (NEW)
+        synth = r.get("synth_div")
+        if synth and synth.get("overall_bias") != "NEUTRAL":
+            lines.append(f"🎯 종합 다이버전스: {synth['summary']}")
+            if synth.get("conflicts"):
+                lines.append(f"   ⚠️ 신호 충돌: {' / '.join(synth['conflicts'])}")
+
         if r.get("borderline"):
             lines.append(f"⚠️ 경계선: {r['borderline']['msg']}")
         lines.append("")
 
-    lines.append("위 데이터를 RSI 사이클 이론 v2에 따라 분석해주세요.")
+    lines.append("위 데이터를 RSI 사이클 이론 v3에 따라 분석해주세요.")
     lines.append("핵심: 각 타임프레임의 **레짐**을 확인하고, 레짐별 RSI 파동 범위에 맞게 판단하세요.")
     lines.append("하락 추세에서는 RSI 과매수 목표 금지 — 반등 한계(45~55)를 기본값으로 판단하세요.")
     lines.append("다이버전스 후보가 있으면 확정/미확정/실패 여부를 반드시 판정하세요.")
+    lines.append("히든 다이버전스는 반전 신호가 아닌 추세 지속 신호임을 명확히 구분하세요.")
+    lines.append("거래량/OBV 다이버전스가 RSI 다이버전스와 일치/충돌하는지 반드시 언급하세요.")
     lines.append("각 관점(스캘핑/데이트레이딩/스윙/장기)별 현재 사이클 위치와 매매 방향을 구체적으로 판단하세요.")
     lines.append("상위-하위 프레임 간 충돌이나 다이버전스가 있으면 반드시 언급하세요.")
     lines.append("진입/청산 타점이 보이면 구체적 가격을 제시하세요.")

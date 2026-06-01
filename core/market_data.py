@@ -233,10 +233,19 @@ def calc_adx(candles, period=14):
     return round(adx, 1), round(final_plus_di, 1), round(final_minus_di, 1)
 
 
-def calc_obv(candles):
-    """OBV (On Balance Volume) — 거래량 누적으로 매집/분산 감지"""
+def calc_obv(candles, return_series=False):
+    """OBV (On Balance Volume) — 거래량 누적으로 매집/분산 감지
+
+    Args:
+        candles: 캔들 데이터 리스트
+        return_series: True이면 (obv, obv_ema, obv_list) 반환 (다이버전스 분석용)
+
+    Returns:
+        return_series=False: (obv, obv_ema) — 기존 호환
+        return_series=True:  (obv, obv_ema, obv_list) — 전체 시계열 포함
+    """
     if len(candles) < 2:
-        return None, None  # obv, obv_ema
+        return (None, None, []) if return_series else (None, None)
 
     obv = 0
     obv_list = [0]
@@ -249,6 +258,8 @@ def calc_obv(candles):
 
     # OBV의 20일 EMA (추세선)
     obv_ema = calc_ema(obv_list, 20)[-1] if len(obv_list) >= 20 else obv_list[-1]
+    if return_series:
+        return obv, obv_ema, obv_list
     return obv, obv_ema
 
 
