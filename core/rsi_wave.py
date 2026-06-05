@@ -248,10 +248,9 @@ RSI 파동 분석에서의 적용 규칙:
 | 리스크 | 낮음 / 보통 / 높음 |
 
 ## 💰 핵심 가격대 & 손익비
-| 항목 | 가격 |
-|------|------|
-(현재가 / 진입후보 / 손절 / 관점무효화 / 1~3차 목표)
-- 현재가 추격 손익비, 추천 진입가 손익비를 R로 표기. **1R 미만이면 "진입 부적합" 명시.**
+- **R(손익비) 설명을 첫 줄에 한 줄로**: "R = 목표까지 거리 ÷ 손절까지 거리. 1R=본전, 2R↑ 양호, 1R 미만 진입 부적합."
+- 그 아래에 제공된 '📐 진입 시나리오 손익비' 표를 그대로 옮겨라(진입가·손절·목표·R). **R은 직접 계산하지 말고 제공된 값 사용.**
+- 핵심 가격대(현재가/진입후보/손절/관점무효화/1~3차 목표)는 '📍 핵심 레벨 맵'의 값만 사용.
 
 ## 🅰️ 메인 / 🅱️ 반대 시나리오
 - 🅰️ 메인(우세 방향): 조건 → 행동 → 목표
@@ -277,12 +276,15 @@ RSI 파동 분석에서의 적용 규칙:
 - 지금 무엇을 / 어떤 조건에서 진입 / 어떤 조건에서 관점 약화.
 
 ━━━ 작성 규칙 ━━━
+• ⚠️ 가격·손익비는 반드시 제공된 '📍 핵심 레벨 맵'과 '📐 진입 시나리오 손익비'의 값만 사용.
+  데이터에 없는 가격을 새로 만들거나 추정하지 마라. R은 직접 암산하지 마라.
+• 가격 범위 표기는 물결(~)이 아니라 en-dash(–)나 화살표(→)로. 예: "1,739–1,743" (1,739~1,743 금지)
 • 방향성 점수와 즉시 진입 점수를 분리 — 방향이 맞아도 추격 불리하면 "방향 O, 즉시진입 X" 명시
 • 손절(포지션) ≠ 관점 무효화(분석) 항상 구분
 • 손익비 1R 미만 진입은 '진입 금지'로 분류
 • 표·불릿 위주, 장문 서술/반복 금지, 마크다운 취소선(~~) 금지
 • 다이버전스는 상태(후보/확정/실패)까지 명시
-• 레짐별 목표가 원칙: 하락장 롱목표=EMA20/VWAP · 횡보=BB상단/RSI70 · 상승=전고
+• 레짐별 목표가 원칙(반등 목표 상한 엄수): 하락장 롱목표=EMA20/VWAP까지만(그 이상 과매수 목표 금지) · 횡보=BB상단/RSI70 · 상승=전고
 • CVD가 가격과 어긋나거나, 펀딩 과열이거나, 경계선 RSI면 → '진입 금지' 또는 '리스크'에 반영
 
 ⚠️ 투자 조언이 아닌 기술적 분석 의견입니다."""
@@ -2185,9 +2187,15 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 regime, cur, e20, e50, vwap, bb_upper, bb_mid, bb_lower
             )
 
+            # ── 최근 스윙 고저 (실제 S/R 레벨) ──
+            recent_high = max(c["high"] for c in candles[-30:])
+            recent_low = min(c["low"] for c in candles[-30:])
+
             results[tf_label] = {
                 # 기존 필드 (호환 유지)
                 "price": cur,
+                "recent_high": round(recent_high, 2),
+                "recent_low": round(recent_low, 2),
                 "rsi": cur_rsi,
                 "prev_rsi": prev_rsi,
                 "ema20": e20,
@@ -2869,33 +2877,16 @@ def assess_entry(results, ref_tf_order=("1시간", "15분", "4시간", "5분", "
             entry_score -= 10
             blocks.append("4시간 하락지속형 거래량 — 고점 추격 롱 감점")
 
-    # ── 4) 현재가 추격 손익비(R) ──
-    targets = r.get("targets") or {}
+    # ── 4) 현재가 추격 손익비(R) — 레벨 맵 기반 (진입 시나리오 표와 동일 기준가·공식) ──
+    lm = build_level_map(results)
+    atr = r.get("atr") or (price * 0.005)
+    rp = lm["ref_price"] if lm else price  # 시나리오 표와 동일 기준가 사용
+    levels = {"price": round(rp, 2)}
     rr_val = None
-    levels = {"price": round(price, 2)}
-    if direction == "숏":
-        tps = [t[1] for t in targets.get("short", []) if t[1] < price]
-        tgt = max(tps) if tps else None  # 가장 가까운 하단 목표
-        cands = [x for x in (r.get("ema20"), r.get("vwap")) if x and x > price]
-        inval = min(cands) if cands else None
-        levels["resistance"] = round(inval, 2) if inval else None
-        levels["target"] = round(tgt, 2) if tgt else None
-        if tgt and inval and inval > price:
-            risk = inval - price
-            reward = price - tgt
-            rr_val = round(reward / risk, 2) if risk > 0 else None
-    else:
-        tps = [t[1] for t in targets.get("long", []) if t[1] > price]
-        tgt = min(tps) if tps else None
-        cands = [x for x in (r.get("ema20"), r.get("vwap")) if x and x < price]
-        inval = max(cands) if cands else None
-        levels["support"] = round(inval, 2) if inval else None
-        levels["target"] = round(tgt, 2) if tgt else None
-        if tgt and inval and inval < price:
-            risk = price - inval
-            reward = tgt - price
-            rr_val = round(reward / risk, 2) if risk > 0 else None
-
+    if lm:
+        stop, target, rr_val = _scenario_rr(direction, rp, lm, atr, rp)
+        levels["resistance" if direction == "숏" else "support"] = stop
+        levels["target"] = target
     if rr_val is not None and rr_val < 1.0:
         entry_score -= 25
         blocks.append(f"현재가 추격 손익비 {rr_val}R < 1 — 진입 부적합")
@@ -2935,12 +2926,185 @@ def assess_entry(results, ref_tf_order=("1시간", "15분", "4시간", "5분", "
     }
 
 
+def build_level_map(results, level_tfs=("5분", "15분", "1시간", "4시간", "1일", "1주"), tol_pct=0.15):
+    """여러 TF의 실제 레벨(EMA/VWAP/BB/스윙고저/목표)을 모아 클러스터링.
+
+    AI가 가격을 지어내지 않도록, 인용 가능한 '실제 레벨 메뉴'를 제공한다.
+    가까운 레벨끼리 묶어 컨플루언스(n≥3)를 표시.
+
+    Returns:
+        dict | None: {ref_price, above: [clusters], below: [clusters]}
+                     cluster = {price, labels: [str], n}
+    """
+    valid = {tf: r for tf, r in results.items() if r and not r.get("error")}
+    if not valid:
+        return None
+    ref = next((valid[tf] for tf in ("15분", "1시간", "5분", "4시간", "1일") if tf in valid), None)
+    if ref is None:
+        return None
+    price = ref["price"]
+
+    raw = []
+    for tf in level_tfs:
+        r = valid.get(tf)
+        if not r:
+            continue
+        s = TF_LABELS_SHORT.get(tf, tf)
+        for key, name in (("ema20", "EMA20"), ("ema50", "EMA50"), ("vwap", "VWAP"),
+                          ("bb_upper", "BB상"), ("bb_lower", "BB하"),
+                          ("recent_high", "최근고"), ("recent_low", "최근저")):
+            v = r.get(key)
+            if v and v > 0:
+                raw.append((round(float(v), 1), f"{s}{name}"))
+        for side in ("long", "short"):
+            for t in (r.get("targets") or {}).get(side, []):
+                raw.append((round(float(t[1]), 1), f"{s}{t[2]}"))
+
+    if not raw:
+        return None
+
+    raw.sort()
+    tol = price * tol_pct / 100
+    clusters = []
+    for p, lbl in raw:
+        if clusters and abs(p - clusters[-1]["price"]) <= tol:
+            c = clusters[-1]
+            c["price"] = (c["price"] * c["n"] + p) / (c["n"] + 1)
+            c["n"] += 1
+            if lbl not in c["labels"]:
+                c["labels"].append(lbl)
+        else:
+            clusters.append({"price": p, "labels": [lbl], "n": 1})
+    for c in clusters:
+        c["price"] = round(c["price"], 1)
+
+    above = sorted([c for c in clusters if c["price"] > price], key=lambda c: c["price"])
+    below = sorted([c for c in clusters if c["price"] < price], key=lambda c: -c["price"])
+    return {"ref_price": round(price, 1), "above": above, "below": below}
+
+
+def _rr_grade(R):
+    if R is None:
+        return "산출불가"
+    return "양호" if R >= 2 else "보통" if R >= 1 else "부적합"
+
+
+def _scenario_rr(direction, entry, lm, atr, price):
+    """진입가 1개에 대한 (손절, 목표, 손익비R) 계산 — 단일 공식(헤드라인·표 공용).
+
+    손절: 진입에서 0.5×ATR 이상 떨어진 가장 가까운 반대 레벨 (없으면 1.2×ATR)
+    목표: 현재가 기준 0.3% 이상 떨어진 가장 가까운 1차 지지/저항
+    """
+    above, below = lm["above"], lm["below"]
+    min_gap = atr * 0.5
+    tgt_gap = price * 0.003
+
+    if direction == "숏":
+        below_m = [c for c in below if (price - c["price"]) >= tgt_gap] or below
+        target = below_m[0]["price"] if below_m else None
+        stop = next((c["price"] for c in above if c["price"] >= entry + min_gap),
+                    round(entry + 1.2 * atr, 1))
+    else:
+        above_m = [c for c in above if (c["price"] - price) >= tgt_gap] or above
+        target = above_m[0]["price"] if above_m else None
+        stop = next((c["price"] for c in below if c["price"] <= entry - min_gap),
+                    round(entry - 1.2 * atr, 1))
+
+    if not target or not stop:
+        return (round(stop, 1) if stop else None, round(target, 1) if target else None, None)
+    risk = abs(stop - entry)
+    reward = abs(entry - target)
+    R = round(reward / risk, 2) if risk > 0 else None
+    return (round(stop, 1), round(target, 1), R)
+
+
+def build_entry_scenarios(results):
+    """진입가별 손익비(R)를 파이썬이 직접 계산 (AI 암산 금지).
+
+    손절은 'ATR의 0.5배 이상 떨어진 가장 가까운 반대 레벨', 목표는 현재가
+    기준 1차 지지/저항으로 통일. 높은 데서 진입할수록 R이 좋아지는 구조를 보여줌.
+
+    Returns:
+        dict | None: {direction, price, scenarios: [{label, entry, stop, target, R, grade}]}
+    """
+    ea = assess_entry(results)
+    if not ea or ea["direction"] == "중립":
+        return None
+    lm = build_level_map(results)
+    if not lm:
+        return None
+
+    price = lm["ref_price"]
+    direction = ea["direction"]
+    rref = results.get(ea.get("ref_tf")) or {}
+    atr = rref.get("atr") or (price * 0.005)
+    scenarios = []
+
+    def _mk(label, entry):
+        stop, target, R = _scenario_rr(direction, entry, lm, atr, price)
+        if not target:
+            return None
+        return {"label": label, "entry": round(entry, 1), "stop": stop,
+                "target": target, "R": R, "grade": _rr_grade(R)}
+
+    # 현재가 추격
+    s = _mk("현재가 추격", price)
+    if s:
+        scenarios.append(s)
+
+    # 반등/눌림 진입 후보 — 현재가에서 0.3% 이상 떨어진 레벨만 (붙은 레벨 제외)
+    if direction == "숏":
+        cands = [c for c in lm["above"] if (c["price"] - price) >= price * 0.003][:3]
+        verb = "반등실패"
+    else:
+        cands = [c for c in lm["below"] if (price - c["price"]) >= price * 0.003][:3]
+        verb = "눌림"
+    for c in cands:
+        s = _mk(f"{'·'.join(c['labels'][:2])} {verb}", c["price"])
+        if s:
+            scenarios.append(s)
+
+    seen, uniq = set(), []
+    for s in scenarios:
+        if s["entry"] in seen:
+            continue
+        seen.add(s["entry"])
+        uniq.append(s)
+    return {"direction": direction, "price": price, "scenarios": uniq[:4]}
+
+
+def _format_level_map(lm, max_each=5):
+    """레벨 맵 → AI/요약용 텍스트"""
+    price = lm["ref_price"]
+
+    def fmt(clusters):
+        rows = []
+        for c in clusters[:max_each]:
+            pct = (c["price"] - price) / price * 100 if price else 0
+            conf = " ⭐컨플루언스" if c["n"] >= 3 else ""
+            rows.append(f"  {c['price']} ({'+' if pct >= 0 else ''}{pct:.1f}%) [{', '.join(c['labels'][:3])}]{conf}")
+        return "\n".join(rows) if rows else "  (없음)"
+
+    return f"현재가 {price}\n저항(위):\n{fmt(lm['above'])}\n지지·목표(아래):\n{fmt(lm['below'])}"
+
+
+def _format_scenarios_md(es):
+    """진입 시나리오 → 마크다운 표"""
+    rows = ["| 진입 시나리오 | 진입가 | 손절 | 목표 | 손익비 |",
+            "|---|---|---|---|---|"]
+    for s in es["scenarios"]:
+        rr = f"{s['R']}R" if s["R"] is not None else "-"
+        rows.append(f"| {s['label']} | {s['entry']} | {s['stop']} | {s['target']} | {rr}({s['grade']}) |")
+    return "\n".join(rows)
+
+
 def generate_summary_text(results):
     """RSI 파동 종합 판정 — 간결 스캔형 (관점별 포지션 + 레짐 + 핵심 경고)"""
     lines = ["### 📊 종합 판정"]
 
     # ── 🧭 결정 판정 (방향 ≠ 즉시진입) ──
     ea = assess_entry(results)
+    es = build_entry_scenarios(results)
     if ea:
         dir_icon = "🔴" if ea["direction"] == "숏" else "🟢" if ea["direction"] == "롱" else "⚪"
         if ea["chase_ok"]:
@@ -2949,7 +3113,14 @@ def generate_summary_text(results):
             entry_icon, entry_txt = "🚫", "추격 금지·반등 실패 대기"
         else:
             entry_icon, entry_txt = "⚠️", "추격 자제·대기"
-        rr_txt = f" · 추격 손익비 {ea['rr']}R" if ea["rr"] is not None else ""
+
+        # 현재가 추격 손익비 — 시나리오(파이썬 계산)에서 가져옴
+        chase_R = None
+        if es:
+            chase = next((s for s in es["scenarios"] if s["label"] == "현재가 추격"), None)
+            chase_R = chase["R"] if chase else None
+        rr_txt = f" · 추격 손익비 {chase_R}R" if chase_R is not None else ""
+
         lines.append(
             f"> 🧭 **{dir_icon} {ea['direction']} 우위** (정렬 {ea['align']}, 방향성 {ea['direction_score']}) "
             f"· {entry_icon} **{entry_txt}** (진입적합 {ea['entry_score']}){rr_txt}"
@@ -2960,6 +3131,12 @@ def generate_summary_text(results):
         if ea["blocks"]:
             lines.append(f"> ⛔ 진입 주의: {' / '.join(ea['blocks'][:3])}")
         lines.append("")
+
+        # ── 💰 진입가별 손익비 표 (파이썬 계산) ──
+        if es and es["scenarios"]:
+            lines.append("**💰 진입가별 손익비** (R = 목표거리÷손절거리, 1R 미만은 진입 부적합)")
+            lines.append(_format_scenarios_md(es))
+            lines.append("")
 
     # ── 관점별 포지션 (한 줄씩) ──
     groups = {
@@ -3091,6 +3268,22 @@ def format_rsi_wave_for_ai(symbol, results):
             lines.append(f"- 기준 TF {ea['ref_tf']}: {' · '.join(level_bits)}")
         if ea.get("blocks"):
             lines.append(f"- 진입 금지/주의: {' / '.join(ea['blocks'])}")
+        lines.append("")
+
+    # ── 📍 핵심 레벨 맵 (AI는 이 가격들만 인용) ──
+    lm = build_level_map(results)
+    if lm:
+        lines.append("📍 핵심 레벨 맵 — ⚠️ 리포트의 모든 가격은 아래 값만 사용하고, 없는 가격은 만들지 마세요:")
+        lines.append(_format_level_map(lm))
+        lines.append("")
+
+    # ── 📐 진입 시나리오 손익비 (파이썬 계산 — AI는 이 R값 그대로 사용) ──
+    es = build_entry_scenarios(results)
+    if es and es["scenarios"]:
+        lines.append("📐 진입 시나리오 손익비 (파이썬 계산 — 손익비는 직접 암산하지 말고 이 값을 사용):")
+        for s in es["scenarios"]:
+            rr = f"{s['R']}R" if s["R"] is not None else "-"
+            lines.append(f"- {s['label']}: 진입 {s['entry']} / 손절 {s['stop']} / 목표 {s['target']} → {rr} ({s['grade']})")
         lines.append("")
 
     for tf in WAVE_TIMEFRAMES:
