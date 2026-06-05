@@ -19,6 +19,13 @@ from core.session_manager import (
     create_session, save_session, load_session, delete_session, list_sessions,
 )
 
+# 모바일 분석 요청 처리 워커 (앱 실행 중 백그라운드로 작업 큐 폴링)
+try:
+    from core.job_worker import start_worker_thread
+    start_worker_thread()
+except Exception:
+    pass
+
 # ─── 페이지 설정 ───
 st.set_page_config(
     page_title="TradeAI Assistant",

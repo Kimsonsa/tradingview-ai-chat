@@ -775,6 +775,7 @@
         <div class="header-title">◈ TradeAI</div>
         <div class="header-subtitle" id="list-subtitle">모바일 뷰어</div>
       </div>
+      <button class="header-btn" onclick="newAnalysis()" title="새 분석 요청">🌊</button>
       <button class="header-btn" onclick="loadSessions()" title="새로고침" id="refresh-btn">🔄</button>
       <button class="header-btn" onclick="showSetup()" title="설정">⚙️</button>
     </div>
@@ -851,6 +852,65 @@
       const rows = await resp.json();
       if (!rows.length) throw new Error('세션을 찾을 수 없습니다');
       return rows[0];
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* 분석 요청 (작업 큐 → 데스크탑 워커 처리)        */
+    /* ═══════════════════════════════════════════ */
+    function newAnalysis() {
+      const last = localStorage.getItem('tradeai_last_symbol') || 'BTCUSDT';
+      let symbol = prompt('분석할 종목을 입력하세요 (예: BTCUSDT, ETHUSDT)', last);
+      if (!symbol) return;
+      symbol = symbol.trim().toUpperCase();
+      if (!symbol) return;
+      localStorage.setItem('tradeai_last_symbol', symbol);
+      requestAnalysis(symbol);
+    }
+
+    async function requestAnalysis(symbol) {
+      const id = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      try {
+        const resp = await fetch(`${SUPABASE_URL}/rest/v1/analysis_jobs`, {
+          method: 'POST',
+          headers: { ...apiHeaders(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({
+            id, symbol, status: 'pending',
+            requested_at: new Date().toISOString(), source: 'mobile',
+          }),
+        });
+        if (!resp.ok) {
+          showToast(`요청 실패 (${resp.status})`);
+          return;
+        }
+        showToast(`🌊 ${symbol} 분석 요청됨 — 처리 중...`);
+        pollJob(id, 0);
+      } catch (e) {
+        showToast('요청 오류: ' + e.message);
+      }
+    }
+
+    async function pollJob(id, tries) {
+      if (tries > 60) {
+        showToast('⏱ 시간 초과 — 데스크탑 앱이 켜져 있는지 확인하세요');
+        return;
+      }
+      try {
+        const url = `${SUPABASE_URL}/rest/v1/analysis_jobs?id=eq.${encodeURIComponent(id)}&select=status,result_session_id,error`;
+        const r = await fetch(url, { headers: apiHeaders() });
+        const rows = await r.json();
+        const job = rows[0];
+        if (job && job.status === 'done' && job.result_session_id) {
+          showToast('✅ 분석 완료');
+          await loadSessions();
+          showDetail(job.result_session_id);
+          return;
+        }
+        if (job && job.status === 'error') {
+          showToast('분석 오류: ' + (job.error || '알 수 없음'));
+          return;
+        }
+      } catch (e) { /* 네트워크 일시 오류 — 계속 폴링 */ }
+      setTimeout(() => pollJob(id, tries + 1), 3000);
     }
 
     /* ═══════════════════════════════════════════ */
@@ -955,10 +1015,16 @@
           return;
         }
 
+        const reports = sessions.filter(s => s.status === 'report');
         const active = sessions.filter(s => s.status === 'active');
         const closed = sessions.filter(s => s.status === 'closed');
 
         let html = '';
+
+        if (reports.length) {
+          html += `<div class="section-label">🌊 분석 리포트 (${reports.length})</div>`;
+          reports.forEach(s => { html += renderSessionCard(s); });
+        }
 
         if (active.length) {
           html += `<div class="section-label">📊 진행 중 (${active.length})</div>`;
@@ -1000,7 +1066,10 @@
 
       let iconClass = '';
       let icon = '📊';
-      if (s.status === 'active') {
+      if (s.status === 'report') {
+        icon = '🌊';
+        iconClass = 'active';
+      } else if (s.status === 'active') {
         icon = '📈';
         iconClass = 'active';
       } else if (result === '익절') {
@@ -1018,8 +1087,8 @@
         pnlHtml = `<div class="session-pnl ${cls}">${str}</div>`;
       }
 
-      const meta = s.status === 'active'
-        ? `${s.interval || ''} · ${time}`
+      const meta = (s.status === 'active' || s.status === 'report')
+        ? `${s.interval || ''} · ${time}`.replace(/^ · /, '')
         : `${direction} · ${time}`;
 
       return `
