@@ -39,16 +39,8 @@ _WIN_THRESHOLD = 0.1
 # ═══════════════════════════════════════════════
 
 def _get_conn():
-    try:
-        import streamlit as st
-        import psycopg2
-        cfg = st.secrets["supabase"]
-        return psycopg2.connect(
-            host=cfg["host"], port=cfg["port"], dbname=cfg["dbname"],
-            user=cfg["user"], password=cfg["password"], connect_timeout=5,
-        )
-    except Exception:
-        return None
+    from core.db_config import get_conn
+    return get_conn()
 
 
 _DB_READY = False

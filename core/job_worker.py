@@ -30,11 +30,19 @@ _jobs_ready = False
 
 
 def _load_config():
+    """OpenAI 키/모델 — 로컬 설정파일(데스크탑) + 환경변수(클라우드) 병합.
+    환경변수가 있으면 우선 적용."""
+    cfg = {}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
     except Exception:
-        return {}
+        pass
+    if os.environ.get("OPENAI_API_KEY"):
+        cfg["api_key"] = os.environ["OPENAI_API_KEY"]
+    if os.environ.get("TRADEAI_MODEL"):
+        cfg["model"] = os.environ["TRADEAI_MODEL"]
+    return cfg
 
 
 # ═══════════════════════════════════════════════

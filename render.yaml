@@ -1,0 +1,26 @@
+# Render Blueprint — 클라우드 분석 워커 자동 배포 설정
+# Render 대시보드에서 New + → Blueprint → 이 저장소 선택 시 자동 인식.
+# envVars는 sync:false 이므로 대시보드에서 값을 직접 입력해야 함.
+services:
+  - type: web
+    name: tradeai-cloud-worker
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-cloud.txt
+    startCommand: uvicorn cloud_worker:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: SUPABASE_HOST
+        sync: false
+      - key: SUPABASE_PORT
+        value: "5432"
+      - key: SUPABASE_DB
+        value: postgres
+      - key: SUPABASE_USER
+        sync: false
+      - key: SUPABASE_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TRADEAI_MODEL
+        value: gpt-5.5

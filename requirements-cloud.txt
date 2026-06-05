@@ -1,0 +1,7 @@
+# 클라우드 워커 전용 의존성 (Streamlit/pywin32 제외 — 분석 로직만)
+fastapi>=0.110.0
+uvicorn>=0.29.0
+requests>=2.31.0
+numpy>=1.24.0
+openai>=1.30.0
+psycopg2-binary>=2.9.9

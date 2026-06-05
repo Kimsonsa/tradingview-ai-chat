@@ -753,6 +753,13 @@
         <div class="setup-hint">Supabase 대시보드 → Settings → API → Project API keys → <code>anon</code> <code>public</code></div>
       </div>
 
+      <div class="setup-field">
+        <label class="setup-label">분석 서버 URL (선택 — PC 없이 분석)</label>
+        <input id="setup-worker" class="setup-input" type="text"
+               placeholder="https://tradeai-cloud-worker.onrender.com">
+        <div class="setup-hint">Render 배포 URL. 비워두면 <strong>데스크탑 앱</strong>이 켜져 있을 때만 분석됨. 입력하면 PC 없이 폰만으로 분석 가능.</div>
+      </div>
+
       <button id="setup-submit" class="setup-btn" onclick="saveSetup()">연결하기</button>
       <div id="setup-error" class="setup-error"></div>
 
@@ -882,6 +889,11 @@
           showToast(`요청 실패 (${resp.status})`);
           return;
         }
+        // 클라우드 워커 URL이 설정돼 있으면 즉시 처리 트리거 (PC 불필요)
+        if (CONFIG.workerUrl) {
+          fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' })
+            .catch(() => { /* 콜드스타트/일시오류 — 폴링이 결과를 확인 */ });
+        }
         showToast(`🌊 ${symbol} 분석 요청됨 — 처리 중...`);
         pollJob(id, 0);
       } catch (e) {
@@ -891,7 +903,9 @@
 
     async function pollJob(id, tries) {
       if (tries > 60) {
-        showToast('⏱ 시간 초과 — 데스크탑 앱이 켜져 있는지 확인하세요');
+        showToast(CONFIG.workerUrl
+          ? '⏱ 시간 초과 — 클라우드 서버 상태를 확인하세요'
+          : '⏱ 시간 초과 — 데스크탑 앱이 켜져 있는지 확인하세요');
         return;
       }
       try {
@@ -932,6 +946,7 @@
 
     function showSetup() {
       document.getElementById('setup-key').value = CONFIG.anonKey || '';
+      document.getElementById('setup-worker').value = CONFIG.workerUrl || '';
       showScreen('setup-screen');
     }
 
@@ -977,7 +992,8 @@
           throw new Error(`HTTP ${resp.status}: ${body.substring(0, 100)}`);
         }
 
-        saveConfig({ anonKey: key });
+        const workerUrl = (document.getElementById('setup-worker').value || '').trim().replace(/\/+$/, '');
+        saveConfig({ anonKey: key, workerUrl: workerUrl });
         showScreen('list-screen');
         loadSessions();
         showToast('✅ 연결 성공!');

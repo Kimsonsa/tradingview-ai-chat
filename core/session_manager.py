@@ -8,9 +8,10 @@ import os
 import uuid
 from datetime import datetime
 
-import streamlit as st
 import psycopg2
 import psycopg2.extras
+
+from core.db_config import get_conn as _db_get_conn
 
 # 로컬 폴백 디렉토리
 SESSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sessions")
@@ -21,20 +22,8 @@ SESSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "session
 # ═══════════════════════════════════════════════
 
 def _get_conn():
-    """Supabase PostgreSQL 연결 (secrets.toml 기반)"""
-    try:
-        cfg = st.secrets["supabase"]
-        conn = psycopg2.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            dbname=cfg["dbname"],
-            user=cfg["user"],
-            password=cfg["password"],
-            connect_timeout=5,
-        )
-        return conn
-    except Exception:
-        return None
+    """Supabase PostgreSQL 연결 (환경변수 우선, secrets.toml 폴백)"""
+    return _db_get_conn()
 
 
 def _init_table():
