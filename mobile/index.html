@@ -213,6 +213,38 @@
       white-space: nowrap;
     }
     .chat-send:active { opacity: 0.7; }
+    .chat-send:disabled { opacity: 0.5; cursor: default; }
+
+    /* 진행바 (전송 후 처리 중) */
+    .chat-progress {
+      height: 3px;
+      background: var(--border-light);
+      overflow: hidden;
+      display: none;
+    }
+    .chat-progress.active { display: block; }
+    .chat-progress::after {
+      content: '';
+      display: block;
+      height: 100%;
+      width: 35%;
+      background: var(--accent);
+      animation: indet 1.1s infinite ease-in-out;
+    }
+    @keyframes indet {
+      0% { margin-left: -35%; }
+      100% { margin-left: 100%; }
+    }
+
+    /* "답변 생성 중" 타이핑 점 */
+    .typing-dots span {
+      display: inline-block;
+      animation: blink 1.4s infinite both;
+      font-size: 10px;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
 
     /* ═══════════════════════════════════════════ */
     /* Setup Screen                               */
@@ -838,11 +870,12 @@
       <button class="header-btn" onclick="refreshDetail()" title="새로고침">🔄</button>
     </div>
     <div class="content" id="detail-content"></div>
+    <div class="chat-progress" id="chat-progress"></div>
     <div class="chat-bar">
       <input id="chat-input" class="chat-input" type="text"
              placeholder="메시지 입력 (실시간 데이터로 분석)..."
              onkeydown="if(event.key==='Enter')sendChat()">
-      <button class="chat-send" onclick="sendChat()">전송</button>
+      <button id="chat-send" class="chat-send" onclick="sendChat()">전송</button>
     </div>
   </div>
 
@@ -971,11 +1004,52 @@
     /* ═══════════════════════════════════════════ */
     /* AI 채팅 (현재 세션에 메시지 추가)              */
     /* ═══════════════════════════════════════════ */
+    let chatPending = false;
+
+    function setChatBusy(busy) {
+      chatPending = busy;
+      const input = document.getElementById('chat-input');
+      const btn = document.getElementById('chat-send');
+      const prog = document.getElementById('chat-progress');
+      if (input) input.disabled = busy;
+      if (btn) { btn.disabled = busy; btn.textContent = busy ? '전송 중' : '전송'; }
+      if (prog) prog.classList.toggle('active', busy);
+    }
+
+    function appendChatBubbles(userText) {
+      const content = document.getElementById('detail-content');
+      if (!content) return;
+      const userHtml = `
+        <div class="msg">
+          <div class="msg-header"><div class="msg-avatar user">👤</div><div class="msg-role">You</div></div>
+          <div class="msg-bubble user">${escapeHtml(userText)}</div>
+        </div>`;
+      const pendingHtml = `
+        <div class="msg" id="chat-pending">
+          <div class="msg-header"><div class="msg-avatar ai">🤖</div><div class="msg-role">AI</div></div>
+          <div class="msg-bubble ai"><span class="typing-dots"><span>●</span><span>●</span><span>●</span></span> 답변 생성 중...</div>
+        </div>`;
+      content.insertAdjacentHTML('beforeend', userHtml + pendingHtml);
+      content.scrollTop = content.scrollHeight;
+    }
+
+    function setPendingText(msg) {
+      const p = document.getElementById('chat-pending');
+      if (p) {
+        const b = p.querySelector('.msg-bubble');
+        if (b) b.textContent = msg;
+        p.removeAttribute('id');
+      }
+    }
+
     async function sendChat() {
+      if (chatPending) { showToast('이전 답변을 기다리는 중...'); return; }
       const input = document.getElementById('chat-input');
       const text = (input.value || '').trim();
       if (!text || !currentDetailId) return;
       input.value = '';
+      appendChatBubbles(text);     // 내 질문 + "답변 생성 중" 즉시 표시
+      setChatBusy(true);
       const jobId = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
       try {
         const resp = await fetch(`${SUPABASE_URL}/rest/v1/analysis_jobs`, {
@@ -987,20 +1061,25 @@
             status: 'pending', requested_at: new Date().toISOString(), source: 'mobile',
           }),
         });
-        if (!resp.ok) { showToast(`전송 실패 (${resp.status})`); return; }
+        if (!resp.ok) {
+          setPendingText(`⚠️ 전송 실패 (${resp.status})`);
+          setChatBusy(false);
+          return;
+        }
         if (CONFIG.workerUrl) {
           fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
         }
-        showToast('💬 전송됨 — 답변 생성 중...');
         pollChat(jobId, 0);
       } catch (e) {
-        showToast('전송 오류: ' + e.message);
+        setPendingText('⚠️ 전송 오류: ' + e.message);
+        setChatBusy(false);
       }
     }
 
     async function pollChat(jobId, tries) {
       if (tries > 60) {
-        showToast(CONFIG.workerUrl ? '⏱ 시간 초과 — 다시 시도하세요' : '⏱ 시간 초과 — 데스크탑 앱 확인');
+        setPendingText('⏱ 시간 초과 — 다시 시도하세요' + (CONFIG.workerUrl ? '' : ' (데스크탑 앱 확인)'));
+        setChatBusy(false);
         return;
       }
       try {
@@ -1008,11 +1087,15 @@
         const r = await fetch(url, { headers: apiHeaders() });
         const job = (await r.json())[0];
         if (job && job.status === 'done') {
-          showToast('✅ 답변 완료');
-          if (currentDetailId) loadDetail(currentDetailId);
+          setChatBusy(false);
+          if (currentDetailId) loadDetail(currentDetailId);  // 실제 대화로 갱신
           return;
         }
-        if (job && job.status === 'error') { showToast('오류: ' + (job.error || '알 수 없음')); return; }
+        if (job && job.status === 'error') {
+          setPendingText('⚠️ 오류: ' + (job.error || '알 수 없음'));
+          setChatBusy(false);
+          return;
+        }
       } catch (e) { /* 계속 폴링 */ }
       setTimeout(() => pollChat(jobId, tries + 1), 3000);
     }
