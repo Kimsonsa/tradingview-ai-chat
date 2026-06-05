@@ -68,10 +68,20 @@ def fetch_klines(symbol="BTCUSDT", interval="1h", limit=210):
     res = requests.get(url, params=params, timeout=10)
     res.raise_for_status()
     raw = res.json()
-    return [{
-        "time": r[0], "open": float(r[1]), "high": float(r[2]),
-        "low": float(r[3]), "close": float(r[4]), "volume": float(r[5])
-    } for r in raw]
+    # Binance kline 배열: [openTime, O, H, L, C, V, closeTime, quoteV, trades,
+    #                      takerBuyBaseV(9), takerBuyQuoteV(10), ignore]
+    # taker buy = 시장가 매수 체결량 → 봉별 델타 = 매수 - 매도 = 2*takerBuy - V
+    out = []
+    for r in raw:
+        vol = float(r[5])
+        taker_buy = float(r[9]) if len(r) > 9 else vol / 2
+        out.append({
+            "time": r[0], "open": float(r[1]), "high": float(r[2]),
+            "low": float(r[3]), "close": float(r[4]), "volume": vol,
+            "taker_buy": taker_buy,
+            "delta": 2 * taker_buy - vol,
+        })
+    return out
 
 
 def calc_ema(closes, period):
@@ -261,6 +271,36 @@ def calc_obv(candles, return_series=False):
     if return_series:
         return obv, obv_ema, obv_list
     return obv, obv_ema
+
+
+def calc_cvd(candles, return_series=False):
+    """CVD (Cumulative Volume Delta) — 시장가 매수/매도 체결의 누적 차이
+
+    OBV가 '종가 방향'으로 거래량을 가감하는 반면, CVD는 실제 시장가(taker) 체결의
+    매수-매도를 누적하므로 공격적 주문 주체를 더 직접적으로 측정한다.
+    봉별 델타 = taker_buy - taker_sell = 2*taker_buy - volume (fetch_klines에서 계산됨)
+
+    Args:
+        candles: 캔들 데이터 리스트 (delta 필드 포함)
+        return_series: True이면 (cvd, cvd_ema, cvd_list) 반환 (다이버전스 분석용)
+
+    Returns:
+        return_series=False: (cvd, cvd_ema)
+        return_series=True:  (cvd, cvd_ema, cvd_list)
+    """
+    if len(candles) < 2:
+        return (None, None, []) if return_series else (None, None)
+
+    cvd = 0.0
+    cvd_list = []
+    for c in candles:
+        cvd += c.get("delta", 0.0)
+        cvd_list.append(cvd)
+
+    cvd_ema = calc_ema(cvd_list, 20)[-1] if len(cvd_list) >= 20 else cvd_list[-1]
+    if return_series:
+        return cvd, cvd_ema, cvd_list
+    return cvd, cvd_ema
 
 
 def calc_vwap(candles, period=20):
@@ -543,6 +583,12 @@ def get_multi_timeframe_context(symbol="BTCUSDT", intervals=None, primary_interv
         if obv is not None:
             obv_str = f"{'매집↑' if obv > obv_ema else '분산↓'}"
 
+        # CVD (시장가 매수/매도 체결)
+        cvd, cvd_ema = calc_cvd(candles)
+        cvd_str = "N/A"
+        if cvd is not None:
+            cvd_str = f"{'매수우위↑' if cvd > cvd_ema else '매도우위↓'} (현재봉 델타 {last['delta']:+.0f})"
+
         # VWAP
         vwap = calc_vwap(candles)
         vwap_str = f"{vwap:.1f} ({'위' if cur > vwap else '아래'})" if vwap else "N/A"
@@ -589,6 +635,7 @@ def get_multi_timeframe_context(symbol="BTCUSDT", intervals=None, primary_interv
 📏 볼린저(20,2): 상={bb_upper} | 중={bb_mid} | 하={bb_lower}{bb_extra}
 📐 ATR(14): {atr_str} | ADX(14): {adx_str}
 💰 VWAP: {vwap_str} | OBV: {obv_str}
+📈 CVD: {cvd_str}
 📊 거래량: {last['volume']:.0f} (5봉평균 대비 {vol_ratio}%)
 📋 최근 5봉:
 {candle_str}""")

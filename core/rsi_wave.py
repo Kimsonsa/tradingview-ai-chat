@@ -20,7 +20,7 @@ import math
 import numpy as np
 from core.market_data import (
     fetch_klines, calc_rsi, calc_ema, calc_macd, calc_bollinger,
-    calc_stoch_rsi, calc_atr, calc_adx, calc_obv, calc_vwap,
+    calc_stoch_rsi, calc_atr, calc_adx, calc_obv, calc_cvd, calc_vwap,
     INTERVAL_MAP,
 )
 
@@ -127,13 +127,27 @@ RSI_WAVE_SYSTEM_PROMPT = """당신은 암호화폐 기술적 분석 전문가입
 ⚠️ 주의: 저점 갱신 + 거래량 증가는 상승 다이버전스가 아님! 기본은 하락 확인.
   투매 클라이맥스(긴 아래꼬리 + 종가 회복 + 이후 저점 방어)일 때만 반등 후보.
 
-━━━ OBV 다이버전스 (최우선) ━━━
+━━━ CVD 다이버전스 (최우선 — 실제 시장가 체결) ━━━
+CVD(Cumulative Volume Delta)는 시장가 매수 - 시장가 매도의 누적으로,
+공격적 주문 주체(실제로 가격을 움직이는 체결)를 가장 직접적으로 보여줌.
+OBV가 '종가 방향'으로 거래량을 가감하는 것보다 한 단계 더 정확함.
+  가격 HH + CVD LH = 하락 다이버전스 (시장가 매수 약화) → 상승 추진력 의심
+  가격 LL + CVD HL = 상승 다이버전스 (시장가 매도 약화) → 반등 가능
+
+★ 핵심 활용 (다이버전스 진위 판별):
+  • RSI 상승 다이버전스가 떠도 CVD가 저점 갱신(LL)이면 → 다이버전스 실패 확률 높음 (숏 익절성 반등일 뿐)
+  • RSI 하락 다이버전스가 떠도 CVD가 고점 갱신(HH)이면 → 숏 다이버전스 실패 확률 높음
+  • 가격 저점 갱신 시 CVD가 같이 깨지면(하락 확인) vs 버티면(반등 후보) — 이 차이가 핵심
+  • CVD 현재 추세(매수우위↑/매도우위↓)가 가격 방향과 일치하는지 항상 확인
+
+━━━ OBV 다이버전스 ━━━
 OBV는 매수/매도 방향이 포함되어 raw volume보다 다이버전스 판단이 정확.
   가격 HH + OBV LH = 하락 다이버전스 (매수 주도 약화)
   가격 LL + OBV HL = 상승 다이버전스 (매도 주도 약화)
 
-다이버전스 우선순위: OBV > RSI > raw volume
-동일 방향 신호가 겹치면 확신도 상승, 충돌하면 OBV를 우선.
+다이버전스 우선순위: CVD > OBV > RSI > raw volume
+실제 시장가 체결(CVD)이 가장 신뢰도 높음.
+동일 방향 신호가 겹치면 확신도 상승, 충돌하면 CVD → OBV 순으로 우선.
 
 ━━━ 시장 레짐 ━━━
 • UP_TREND: 강한 상승 (ADX≥20, EMA 정배열, +DI 우위)
@@ -794,10 +808,69 @@ def detect_obv_divergence(closes, obv_series, lookback=30):
     return None
 
 
-def synthesize_divergence(rsi_div, vol_div, obv_div):
-    """RSI + 거래량 + OBV 다이버전스 종합 판정
+def detect_cvd_divergence(closes, cvd_series, lookback=30):
+    """CVD 다이버전스 감지 — 실제 시장가 체결 기반 (OBV/raw volume보다 직접적)
 
-    우선순위: OBV > RSI > raw volume
+    CVD는 시장가 매수-매도의 누적이라 공격적 주문 주체를 가장 직접적으로 보여줌.
+      가격 HH + CVD LH = 하락 다이버전스 (시장가 매수 약화)
+      가격 LL + CVD HL = 상승 다이버전스 (시장가 매도 약화)
+
+    Returns:
+        dict | None: {type, label, detail, price/cvd 값들, bias}
+    """
+    if len(closes) < lookback or len(cvd_series) < lookback:
+        return None
+
+    price_peaks, price_troughs = _find_local_extremes(closes, lookback)
+    recent_cvd = cvd_series[-lookback:] if len(cvd_series) >= lookback else list(cvd_series)
+
+    def _cvd_at(idx):
+        if idx < len(recent_cvd):
+            return recent_cvd[idx]
+        return recent_cvd[-1]
+
+    # ═══ 하락 다이버전스: 가격 HH + CVD LH ═══
+    if len(price_peaks) >= 2:
+        p1_idx, p1_val = price_peaks[-2]
+        p2_idx, p2_val = price_peaks[-1]
+        c1 = _cvd_at(p1_idx)
+        c2 = _cvd_at(p2_idx)
+
+        if p2_val > p1_val and c2 < c1:
+            return {
+                "type": "CVD_BEAR_DIV",
+                "label": "🔻 CVD 하락 다이버전스",
+                "detail": f"가격 HH({p1_val:.1f}→{p2_val:.1f}) + CVD LH — 시장가 매수 약화",
+                "bias": "BEARISH",
+                "price_1": p1_val, "price_2": p2_val,
+                "cvd_1": round(c1, 0), "cvd_2": round(c2, 0),
+            }
+
+    # ═══ 상승 다이버전스: 가격 LL + CVD HL ═══
+    if len(price_troughs) >= 2:
+        t1_idx, t1_val = price_troughs[-2]
+        t2_idx, t2_val = price_troughs[-1]
+        c1 = _cvd_at(t1_idx)
+        c2 = _cvd_at(t2_idx)
+
+        if t2_val < t1_val and c2 > c1:
+            return {
+                "type": "CVD_BULL_DIV",
+                "label": "🔺 CVD 상승 다이버전스",
+                "detail": f"가격 LL({t1_val:.1f}→{t2_val:.1f}) + CVD HL — 시장가 매도 약화",
+                "bias": "BULLISH",
+                "price_1": t1_val, "price_2": t2_val,
+                "cvd_1": round(c1, 0), "cvd_2": round(c2, 0),
+            }
+
+    return None
+
+
+def synthesize_divergence(rsi_div, vol_div, obv_div, cvd_div=None):
+    """RSI + 거래량 + OBV + CVD 다이버전스 종합 판정
+
+    우선순위: CVD > OBV > RSI > raw volume
+    (CVD = 실제 시장가 체결, 가장 직접적 → 최우선)
     동일 방향 신호가 겹치면 확신도 상승, 충돌하면 우선순위 적용.
 
     Returns:
@@ -823,7 +896,16 @@ def synthesize_divergence(rsi_div, vol_div, obv_div):
             bearish_signals.append(("RSI", rsi_div["label"], 10))
         all_signals.append(f"RSI: {rsi_div['label']}")
 
-    # OBV 다이버전스 분류 (우선순위 최고)
+    # CVD 다이버전스 분류 (우선순위 최고 — 실제 시장가 체결)
+    if cvd_div:
+        cvd_bias = cvd_div.get("bias", "NEUTRAL")
+        if cvd_bias == "BULLISH":
+            bullish_signals.append(("CVD", cvd_div["label"], 13))
+        elif cvd_bias == "BEARISH":
+            bearish_signals.append(("CVD", cvd_div["label"], 13))
+        all_signals.append(f"CVD: {cvd_div['label']}")
+
+    # OBV 다이버전스 분류 (우선순위 높음)
     if obv_div:
         obv_bias = obv_div.get("bias", "NEUTRAL")
         if obv_bias == "BULLISH":
@@ -892,6 +974,7 @@ def synthesize_divergence(rsi_div, vol_div, obv_div):
         "rsi_div": rsi_div,
         "vol_div": vol_div,
         "obv_div": obv_div,
+        "cvd_div": cvd_div,
         "signals": all_signals,
         "conflicts": conflicts,
         "summary": summary,
@@ -1790,6 +1873,9 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
             # ── OBV (시계열 포함) ──
             obv, obv_ema, obv_series = calc_obv(candles, return_series=True)
 
+            # ── CVD (시계열 포함) ──
+            cvd, cvd_ema, cvd_series = calc_cvd(candles, return_series=True)
+
             # ── VWAP ──
             vwap = calc_vwap(candles)
 
@@ -1826,6 +1912,9 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
 
             # ── OBV 다이버전스 (NEW) ──
             obv_div = detect_obv_divergence(closes, obv_series) if obv_series else None
+
+            # ── CVD 다이버전스 (NEW) ──
+            cvd_div = detect_cvd_divergence(closes, cvd_series) if cvd_series else None
 
             # ── 베어 플래그 ──
             bear_flag = detect_bear_flag(candles, rsi_vals, atr, e20, vwap)
@@ -1905,6 +1994,8 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "minus_di": minus_di,
                 "obv": obv,
                 "obv_ema": obv_ema,
+                "cvd": cvd,
+                "cvd_ema": cvd_ema,
                 "vwap": vwap,
                 "vol_ratio": vol_ratio,
                 "cycle_pos": cycle_pos,
@@ -1926,10 +2017,11 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "squeeze_expansion": squeeze_expansion,
                 "targets": targets,
                 "ema20_slope": round(ema20_slope, 3),
-                # ── v3 거래량/OBV 다이버전스 ──
+                # ── v3 거래량/OBV/CVD 다이버전스 ──
                 "vol_div": vol_div,
                 "obv_div": obv_div,
-                "synth_div": synthesize_divergence(div_v2, vol_div, obv_div),
+                "cvd_div": cvd_div,
+                "synth_div": synthesize_divergence(div_v2, vol_div, obv_div, cvd_div),
             }
 
             # 포지션 판정 (v2 점수 모델)
@@ -2382,11 +2474,19 @@ def generate_tf_cards(results):
         elif vol_pat.get("pattern") == "CONTINUATION":
             vol_pat_str = f" | 📊하락지속형"
 
-        # 거래량/OBV 종합 다이버전스 (NEW)
+        # CVD 추세 (시장가 매수/매도 우위)
+        cvd_trend_str = ""
+        if r.get("cvd") is not None and r.get("cvd_ema") is not None:
+            cvd_trend_str = " | CVD " + ("매수우위↑" if r["cvd"] > r["cvd_ema"] else "매도우위↓")
+
+        # 거래량/OBV/CVD 종합 다이버전스 (NEW)
         synth_div_str = ""
         synth_div = r.get("synth_div")
         if synth_div and synth_div.get("overall_bias") != "NEUTRAL":
             synth_div_str = f"\n> 📊 **종합 다이버전스**: {synth_div['summary']}"
+        cvd_div = r.get("cvd_div")
+        if cvd_div:
+            synth_div_str += f"\n> {cvd_div['label']} — {cvd_div['detail']}"
         vol_div = r.get("vol_div")
         if vol_div and vol_div.get("bias") != "NEUTRAL":
             synth_div_str += f"\n> {vol_div['label']} — {vol_div['detail']}"
@@ -2429,7 +2529,7 @@ def generate_tf_cards(results):
 | VWAP | {vwap_str} |
 | 볼밴폭 | {bb_str} |
 | MACD Hist | {r['macd_hist']:.2f} {macd_dir} |
-| 거래량 | 5봉평균 대비 {r['vol_ratio']}%{vol_pat_str} |
+| 거래량 | 5봉평균 대비 {r['vol_ratio']}%{vol_pat_str}{cvd_trend_str} |
 
 📍 **{r['cycle_desc']}** — {r['rsi_strategy_valid']}
 🎯 **{signal_label}** (롱:{long_s} / 숏:{short_s}){htf_str}
@@ -2675,6 +2775,14 @@ def format_rsi_wave_for_ai(symbol, results):
         if obv_div_data:
             lines.append(f"📊 OBV 다이버전스: {obv_div_data['label']} — {obv_div_data['detail']}")
 
+        # CVD 추세 + 다이버전스 (NEW — 최우선)
+        if r.get("cvd") is not None and r.get("cvd_ema") is not None:
+            cvd_dir = "매수우위(↑)" if r["cvd"] > r["cvd_ema"] else "매도우위(↓)"
+            lines.append(f"📈 CVD: {cvd_dir} (CVD={r['cvd']:,.0f} EMA={r['cvd_ema']:,.0f})")
+        cvd_div_data = r.get("cvd_div")
+        if cvd_div_data:
+            lines.append(f"📊 CVD 다이버전스(최우선): {cvd_div_data['label']} — {cvd_div_data['detail']}")
+
         # 종합 다이버전스 (NEW)
         synth = r.get("synth_div")
         if synth and synth.get("overall_bias") != "NEUTRAL":
@@ -2691,7 +2799,8 @@ def format_rsi_wave_for_ai(symbol, results):
     lines.append("하락 추세에서는 RSI 과매수 목표 금지 — 반등 한계(45~55)를 기본값으로 판단하세요.")
     lines.append("다이버전스 후보가 있으면 확정/미확정/실패 여부를 반드시 판정하세요.")
     lines.append("히든 다이버전스는 반전 신호가 아닌 추세 지속 신호임을 명확히 구분하세요.")
-    lines.append("거래량/OBV 다이버전스가 RSI 다이버전스와 일치/충돌하는지 반드시 언급하세요.")
+    lines.append("CVD/OBV/거래량 다이버전스가 RSI 다이버전스와 일치/충돌하는지 반드시 언급하세요.")
+    lines.append("특히 CVD(실제 시장가 체결)가 가격을 따라가는지 확인 — RSI 상승 다이버전스가 있어도 CVD가 저점 갱신이면 다이버전스 실패 가능성이 높습니다.")
     lines.append("각 관점(스캘핑/데이트레이딩/스윙/장기)별 현재 사이클 위치와 매매 방향을 구체적으로 판단하세요.")
     lines.append("상위-하위 프레임 간 충돌이나 다이버전스가 있으면 반드시 언급하세요.")
     lines.append("진입/청산 타점이 보이면 구체적 가격을 제시하세요.")
