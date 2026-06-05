@@ -632,10 +632,12 @@
       border-radius: var(--radius-sm);
       overflow: hidden;
       border: 1px solid var(--border);
+      min-height: 60px;
+      background: var(--bg-secondary);
     }
     .rsi-wave-container iframe {
       width: 100%;
-      height: 350px;
+      height: 300px;
       border: none;
       display: block;
     }
@@ -1076,17 +1078,38 @@
 
         content.innerHTML = html;
 
-        // Render RSI wave iframes (using srcdoc to avoid cross-origin errors)
+        // Render RSI wave iframes — 지연 로딩(스크롤 시 생성)으로 다수 리포트에서도 멈추지 않게
         try {
-          content.querySelectorAll('.rsi-wave-container').forEach(container => {
+          const containers = content.querySelectorAll('.rsi-wave-container');
+
+          const renderIframe = (container) => {
+            if (container.dataset.rendered) return;
             const htmlData = container.getAttribute('data-html');
-            if (htmlData) {
-              const iframe = document.createElement('iframe');
-              iframe.sandbox = 'allow-scripts';
-              iframe.srcdoc = decodeURIComponent(htmlData);
-              container.appendChild(iframe);
-            }
-          });
+            if (!htmlData) return;
+            const html = decodeURIComponent(htmlData);
+            const iframe = document.createElement('iframe');
+            iframe.sandbox = 'allow-scripts';
+            // 가격 레벨/진입 지도가 포함된 새 리포트는 더 높게
+            iframe.style.height = html.includes('진입 지도') ? '620px' : '300px';
+            iframe.srcdoc = html;
+            container.appendChild(iframe);
+            container.dataset.rendered = '1';
+          };
+
+          if ('IntersectionObserver' in window) {
+            const io = new IntersectionObserver((entries, obs) => {
+              entries.forEach(e => {
+                if (e.isIntersecting) {
+                  renderIframe(e.target);
+                  obs.unobserve(e.target);
+                }
+              });
+            }, { rootMargin: '400px' });
+            containers.forEach(c => io.observe(c));
+          } else {
+            // 폴백: 최근 3개만 즉시 렌더 (과부하 방지)
+            Array.from(containers).slice(-3).forEach(renderIframe);
+          }
         } catch (iframeErr) {
           console.warn('RSI wave rendering skipped:', iframeErr);
         }
