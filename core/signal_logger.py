@@ -520,3 +520,69 @@ def get_signal_stats(symbol=None):
         "by_regime": _group_agg(rows, "regime"),
         "by_timeframe": _group_agg(rows, "timeframe"),
     }
+
+
+# ═══════════════════════════════════════════════
+# 공용 API — 가중치 조정 제안 (반자동, 사람 승인)
+# ═══════════════════════════════════════════════
+
+# 그룹별 최소 표본 — 이보다 적으면 노이즈라 제안 안 함
+SUGGEST_MIN_SAMPLES = 20
+
+
+def get_weight_suggestions(symbol=None, min_samples=SUGGEST_MIN_SAMPLES):
+    """평가 통계 기반 가중치 조정 '제안' 생성 (자동 적용 X — 사람이 판단).
+
+    충분한 표본(min_samples 이상)이 모인 signal_type/regime만 대상.
+    적중률이 낮으면 하향, 높으면 상향 여지를 제안.
+
+    Returns:
+        dict: {
+            ready: bool,          # 전체 표본이 최소치 도달했는지
+            total: int,           # 평가 완료 신호 수
+            needed: int,          # 제안 시작까지 남은 표본 수
+            min_samples: int,
+            suggestions: [ {target, direction, win_rate, avg_return, n, severity, message}, ... ]
+        }
+    """
+    rows = _all_evaluated(symbol)
+    total = len(rows)
+    suggestions = []
+
+    for key_label, key_col in (("신호유형", "signal_type"), ("레짐", "regime")):
+        for name, v in _group_agg(rows, key_col).items():
+            n = v.get("n") or 0
+            wr = v.get("win_rate")
+            ar = v.get("avg_return")
+            if n < min_samples or wr is None:
+                continue
+
+            # 적중률 + 기대수익으로 방향 판단
+            if wr < 40 or (ar is not None and ar < -0.5):
+                severity = "high" if (wr < 30 or (ar is not None and ar < -1.0)) else "medium"
+                suggestions.append({
+                    "target": f"{key_label}: {name}",
+                    "direction": "DOWN",
+                    "win_rate": wr, "avg_return": ar, "n": n,
+                    "severity": severity,
+                    "message": f"적중률 {wr}%·평균 {ar}% (n={n}) → 가중치 하향 검토",
+                })
+            elif wr >= 60 and (ar is None or ar > 0):
+                suggestions.append({
+                    "target": f"{key_label}: {name}",
+                    "direction": "UP",
+                    "win_rate": wr, "avg_return": ar, "n": n,
+                    "severity": "info",
+                    "message": f"적중률 {wr}%·평균 {ar}% (n={n}) → 가중치 상향 여지",
+                })
+
+    sev_order = {"high": 0, "medium": 1, "info": 2}
+    suggestions.sort(key=lambda s: (sev_order.get(s["severity"], 3), -s["n"]))
+
+    return {
+        "ready": total >= min_samples,
+        "total": total,
+        "needed": max(0, min_samples - total),
+        "min_samples": min_samples,
+        "suggestions": suggestions,
+    }

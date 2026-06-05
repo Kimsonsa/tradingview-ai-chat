@@ -221,22 +221,42 @@ RSI 파동 분석에서의 적용 규칙:
 • 트리거 (1분): 정확한 진입 타이밍 (RSI 극단값 + 구조 이탈)
 • ⚠️ 하위 프레임 다이버전스가 있어도 상위 프레임이 강한 하락이면 신뢰도 50% 감소
 
-━━━ 응답 규칙 ━━━
-• 원론적/교과서적 설명 금지
-• 실시간 수치 기반 구체적 판단만 제공
-• 각 관점(스캘핑/데이트레이딩/스윙/장기)별 구체적 조언
-• 상위-하위 프레임 간 충돌이 있으면 반드시 언급
-• 진입/청산 타점이 있으면 구체적 가격 제시
-• 마크다운 취소선(~~텍스트~~) 절대 사용 금지
-• 레짐에 따른 목표가 차이를 반드시 언급
-  - 하락장 롱 목표: EMA20/VWAP (과매수 목표 금지)
-  - 횡보장 롱 목표: BB 상단/RSI 70
-  - 상승장 롱 목표: 전고/과매수
-• 다이버전스 상태(후보/확정/실패)를 반드시 명시
-• ⚠️ 경계선(borderline) RSI가 감지된 타임프레임이 있으면:
-  - 파동 맵의 화살표 방향이 실제와 다를 수 있음을 지적
-  - RSI 피크/트로프 값과 75/25 기준을 비교하여 실제 방향을 AI 관점에서 판단
-• 신호 유형(STRONG_LONG/SCALP_ONLY/BEARISH_CONTINUATION 등)에 따라 매매 전략 차별화
+━━━ 리포트 출력 형식 (반드시 이 구조 그대로) ━━━
+장황한 서술 금지. 표·불릿 위주로 스캔 가능하게. 아래 5개 섹션 순서를 지킬 것.
+
+## 🎯 결론
+- **방향**: 숏 우위 / 롱 우위 / 관망 (+ 확신도: 확실/강함/우세/약함)
+- **근거**: 한 문장 (핵심 수치 1~2개 포함)
+- **핵심 레벨**: 진입 ___ · 손절 ___ · 목표 ___
+
+## 📊 타임프레임 요약
+| TF | 방향 | 레짐 | 핵심 한마디 |
+|----|------|------|-------------|
+(1분·5분·15분·1시간·4시간·1일·1주 각 한 줄, '핵심'은 5단어 이내)
+
+## 🔍 주목 신호 (최대 3개)
+- 가장 중요한 것만 (CVD/OI/다이버전스/스퀴즈 등). 평범한 신호는 생략.
+
+## ⚠️ 리스크
+- 프레임 충돌 / 스퀴즈 위험 / 다이버전스 실패 / 펀딩 과열 등. 없으면 "특이사항 없음".
+
+## 💡 관점별 전략
+- **스캘핑(1~5분)**: 한 줄 (진입조건·방향)
+- **데이(15분~1시간)**: 한 줄
+- **스윙(4시간~일봉)**: 한 줄
+
+━━━ 작성 규칙 ━━━
+• 결론을 맨 위에, 모든 판단은 수치 근거로
+• 표와 불릿 위주 — 문단형 장문 서술 금지
+• 원론적/교과서적 설명 금지, 같은 말 반복 금지
+• 마크다운 취소선(~~텍스트~~) 절대 금지
+• 다이버전스는 상태(후보/확정/실패)까지 명시
+• 레짐별 목표가 원칙 준수:
+  - 하락장 롱 목표 = EMA20/VWAP (과매수 목표 금지)
+  - 횡보장 = BB상단/RSI70 · 상승장 = 전고/과매수
+• CVD가 가격과 어긋나면(다이버전스 실패 가능) 반드시 '리스크'에 명시
+• 펀딩 과열(숏/롱 쏠림) 시 스퀴즈 위험을 '리스크'에 명시
+• 경계선(borderline) RSI가 있으면 '리스크'에 한 줄로 지적
 
 ⚠️ 투자 조언이 아닌 기술적 분석 의견입니다."""
 
@@ -2725,129 +2745,104 @@ def generate_tf_cards(results):
 
 
 def generate_summary_text(results):
-    """스캘핑/데이/스윙/장기 종합 판정 (v2 — 레짐/다이버전스/HTF 필터)"""
-    sections = []
+    """RSI 파동 종합 판정 — 간결 스캔형 (관점별 포지션 + 레짐 + 핵심 경고)"""
+    lines = ["### 📊 종합 판정"]
 
-    # 관점별 타임프레임 그룹
+    # ── 관점별 포지션 (한 줄씩) ──
     groups = {
-        "스캘핑 (1분/5분)": ["1분", "5분"],
-        "데이트레이딩 (15분/1시간)": ["15분", "1시간"],
-        "스윙 (4시간/일봉)": ["4시간", "1일"],
-        "장기 (주봉)": ["1주"],
+        "스캘핑": ["1분", "5분"],
+        "데이": ["15분", "1시간"],
+        "스윙": ["4시간", "1일"],
+        "장기": ["1주"],
     }
-
     for group_name, tfs in groups.items():
-        summaries = []
+        parts = []
         for tf in tfs:
             r = results.get(tf)
             if r and not r.get("error"):
-                pos = r.get('position', '')
-                conf = r.get('confidence', '')
-                regime = r.get('regime', '')
-                regime_label = REGIME_LABELS.get(regime, '')
-                pos_icon = '🟢' if pos == '롱' else '🔴' if pos == '숏' else '⚪'
-                signal = r.get('signal_type', '')
-                signal_label = SIGNAL_LABELS.get(signal, '')
+                pos = r.get("position", "")
+                conf = r.get("confidence", "")
+                icon = "🟢" if pos == "롱" else "🔴" if pos == "숏" else "⚪"
+                parts.append(f"{tf} {icon}{pos}:{conf}")
+        lines.append(f"- **{group_name}**: {' · '.join(parts) if parts else '데이터 없음'}")
 
-                line = f"{tf}: {pos_icon} **{pos}:{conf}** ({r['cycle_desc']})"
-                if regime_label:
-                    line += f" [{regime_label}]"
-                summaries.append(line)
-        if summaries:
-            sections.append(f"• **{group_name}**: {' / '.join(summaries)}")
-        else:
-            sections.append(f"• **{group_name}**: 데이터 없음")
-
-    # ── 레짐 종합 ──
+    # ── 레짐 현황 (한 줄) ──
     regime_summary = []
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
         if r and not r.get("error") and r.get("regime"):
-            regime_label = REGIME_LABELS.get(r["regime"], r["regime"])
-            regime_color = "🟢" if "UP" in r["regime"] else "🔴" if "DOWN" in r["regime"] else "🟡"
-            regime_summary.append(f"{TF_LABELS_SHORT.get(tf, tf)}:{regime_color}{regime_label}")
+            rl = REGIME_LABELS.get(r["regime"], r["regime"])
+            rc = "🟢" if "UP" in r["regime"] else "🔴" if "DOWN" in r["regime"] else "🟡"
+            regime_summary.append(f"{TF_LABELS_SHORT.get(tf, tf)} {rc}{rl}")
     if regime_summary:
-        sections.append(f"\n📊 **레짐 현황**: {' | '.join(regime_summary)}")
+        lines.append(f"- **레짐**: {' · '.join(regime_summary)}")
 
-    # ── 펀딩/프리미엄 (심볼 단위 — 1회만 표시) ──
-    fund = None
+    # ── 펀딩 (심볼 단위, 1회) ──
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
         if r and not r.get("error") and r.get("funding_analysis"):
-            fund = r["funding_analysis"]
-            break
-    if fund:
-        sections.append(f"💸 **펀딩/프리미엄**: {fund['label']} — {fund['detail']}")
-
-    # ── 상위-하위 프레임 충돌 ──
-    conflicts = []
-    big_tfs = ["1일", "4시간", "1시간"]
-    small_tfs = ["15분", "5분", "1분"]
-
-    big_direction = None
-    small_direction = None
-
-    for tf in big_tfs:
-        r = results.get(tf)
-        if r and not r.get("error"):
-            if r["rsi"] >= 50:
-                big_direction = "상승"
-            else:
-                big_direction = "하락"
+            f = r["funding_analysis"]
+            lines.append(f"- **펀딩**: {f['label']} ({f['detail']})")
             break
 
-    for tf in small_tfs:
-        r = results.get(tf)
-        if r and not r.get("error"):
-            if r["rsi"] >= 50:
-                small_direction = "상승"
-            else:
-                small_direction = "하락"
-            break
+    # ── 핵심 경고 (같은 유형은 TF 묶고, 우선순위 정렬 후 최대 5개) ──
+    squeeze_alerts = []     # (tf, dir, core_met)
+    bear_flag_tfs = []
+    failed_div_tfs = []
+    synth_alerts = []       # (tf, summary)
 
-    if big_direction and small_direction and big_direction != small_direction:
-        conflicts.append(
-            f"⚠️ **프레임 간 충돌**: 상위({big_direction}) ↔ 하위({small_direction}) — "
-            f"하위 프레임의 RSI 사이클이 상위 추세 내 반등/눌림일 수 있음"
-        )
-
-    # ── HTF 필터 경고 ──
-    for tf in small_tfs:
-        r = results.get(tf)
-        if r and r.get("htf_filter") == "HTF_BEARISH":
-            orig = r.get("long_score_original")
-            cur = r.get("long_score", 0)
-            if orig is not None:
-                conflicts.append(
-                    f"⚠️ **{tf} HTF 필터**: 상위 프레임 하락 → 롱 점수 {orig}→{cur} (50% 감점)"
-                )
-            break  # 하나만 표시
-
-    # ── 다이버전스 상태 ──
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
-        if r and r.get("failed_div"):
-            conflicts.append(
-                f"⚠️ **{tf}: 실패한 상승 다이버전스** — {r['failed_div']['detail']} → 하락 지속 가능"
-            )
-        elif r and r.get("div_v2"):
-            status = r.get("div_status", "")
-            status_label = {"CONFIRMED": "✅확정", "UNCONFIRMED": "⏳미확정"}.get(status, "")
-            conflicts.append(f"📊 **{tf}**: {r['div_v2']['label']} — {status_label}")
-        if r and r.get("bear_flag"):
-            conflicts.append(f"⚠️ **{tf}: 베어 플래그** — {r['bear_flag']['detail']}")
-        if r and r.get("borderline"):
-            conflicts.append(f"⚠️ **{tf}**: {r['borderline']['msg']} — AI 판단 필요")
-        # 종합 다이버전스 (NEW)
-        synth = r.get("synth_div") if r else None
+        if not r or r.get("error"):
+            continue
+        sq = r.get("squeeze_expansion")
+        if sq:
+            sq_dir = "하방" if sq["type"] == "BEARISH_EXPANSION" else "상방"
+            squeeze_alerts.append((tf, sq_dir, sq.get("core_met", "?")))
+        if r.get("failed_div"):
+            failed_div_tfs.append(tf)
+        if r.get("bear_flag"):
+            bear_flag_tfs.append(tf)
+        synth = r.get("synth_div")
         if synth and synth.get("overall_bias") != "NEUTRAL" and synth.get("confidence") in ("HIGH", "MEDIUM"):
-            conflicts.append(f"📊 **{tf} 종합 다이버전스**: {synth['summary']}")
+            synth_alerts.append((tf, synth["summary"]))
 
-    summary = "### 📊 종합 판정 (v3 — RSI+거래량+OBV)\n\n" + "\n".join(sections)
-    if conflicts:
-        summary += "\n\n" + "\n".join(conflicts)
+    alerts = []  # (priority, text) — priority 작을수록 먼저
+    for tf, sq_dir, core in squeeze_alerts:
+        icon = "🔴💥" if sq_dir == "하방" else "🟢💥"
+        alerts.append((0, f"{icon} {tf} {sq_dir} 스퀴즈 확장 ({core}/5 조건)"))
+    if failed_div_tfs:
+        alerts.append((1, f"⚠️ 다이버전스 실패 ({'·'.join(failed_div_tfs)}) — 하락 지속 가능"))
+    if bear_flag_tfs:
+        alerts.append((2, f"⚠️ 베어 플래그 ({'·'.join(bear_flag_tfs)}) — 반등 후 재하락 주의"))
+    for tf, summ in synth_alerts[:2]:
+        alerts.append((3, f"📊 {tf} {summ}"))
 
-    return summary
+    # 프레임 간 충돌 (상위 vs 하위 RSI 방향)
+    def _first_dir(tfs):
+        for tf in tfs:
+            r = results.get(tf)
+            if r and not r.get("error"):
+                return "상승" if r["rsi"] >= 50 else "하락"
+        return None
+    big_dir = _first_dir(["1일", "4시간", "1시간"])
+    small_dir = _first_dir(["15분", "5분", "1분"])
+    if big_dir and small_dir and big_dir != small_dir:
+        alerts.append((4, f"⚠️ 프레임 충돌 — 상위({big_dir}) ↔ 하위({small_dir})"))
+
+    # HTF 필터 (롱 감점) — 하나만
+    for tf in ["15분", "5분", "1분"]:
+        r = results.get(tf)
+        if r and r.get("htf_filter") == "HTF_BEARISH":
+            alerts.append((5, f"⚠️ {tf} 상위프레임 하락 → 롱 감점"))
+            break
+
+    if alerts:
+        alerts.sort(key=lambda x: x[0])
+        lines.append("\n**⚠️ 주의**")
+        lines.extend(f"- {text}" for _, text in alerts[:5])
+
+    return "\n".join(lines)
 
 
 def format_rsi_wave_for_ai(symbol, results):

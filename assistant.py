@@ -558,10 +558,13 @@ with st.sidebar:
         st.caption("RSI 파동 신호의 실제 적중률을 추적합니다.")
         if st.button("평가 갱신 & 통계 보기", use_container_width=True, key="eval_stats"):
             try:
-                from core.signal_logger import evaluate_pending_signals, get_signal_stats
+                from core.signal_logger import (
+                    evaluate_pending_signals, get_signal_stats, get_weight_suggestions,
+                )
                 with st.spinner("성숙한 신호 평가 중..."):
                     n_eval = evaluate_pending_signals()
                     st.session_state._signal_stats = get_signal_stats()
+                    st.session_state._signal_suggestions = get_weight_suggestions()
                     st.session_state._signal_eval_n = n_eval
             except Exception as e:
                 st.session_state._signal_stats = {"error": str(e)}
@@ -606,6 +609,29 @@ with st.sidebar:
                 _render_group("타임프레임별", stats.get("by_timeframe", {}))
             else:
                 st.info("아직 평가된 신호가 없습니다. 호라이즌(예: 1시간봉=24h)이 지나야 평가됩니다.")
+
+            # ── 가중치 조정 제안 (반자동) ──
+            sug = st.session_state.get("_signal_suggestions")
+            if sug:
+                st.markdown("---")
+                st.markdown("**💡 가중치 조정 제안**")
+                if not sug.get("ready"):
+                    st.caption(
+                        f"표본 수집 중 — {sug.get('total', 0)}/{sug.get('min_samples', 20)}건. "
+                        f"{sug.get('needed', 0)}건 더 모이면 제안이 시작됩니다."
+                    )
+                elif not sug.get("suggestions"):
+                    st.caption("✅ 모든 신호가 정상 범위 — 조정 제안 없음.")
+                else:
+                    icon_map = {"high": "🔴", "medium": "🟠", "info": "🟢"}
+                    for s in sug["suggestions"]:
+                        arrow = "⬇️ 하향" if s["direction"] == "DOWN" else "⬆️ 상향"
+                        st.markdown(
+                            f"{icon_map.get(s['severity'], '•')} **{s['target']}** {arrow}  \n"
+                            f"<span style='font-size:12px;color:#9A8B78'>{s['message']}</span>",
+                            unsafe_allow_html=True,
+                        )
+                    st.caption("제안은 참고용입니다. 적용은 직접 판단하세요.")
         elif stats and stats.get("error"):
             st.warning(f"통계 오류: {stats['error']}")
 
