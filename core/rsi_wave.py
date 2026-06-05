@@ -43,6 +43,13 @@ TF_OI_PERIOD = {
     "5분": "5m", "15분": "15m", "1시간": "1h", "4시간": "4h", "1일": "1d",
 }
 
+# 방향 집계용 TF 가중치 (상위 시간대 우선)
+DIR_TF_WEIGHT = {
+    "1분": 0.5, "5분": 0.8, "15분": 1.0, "1시간": 1.5,
+    "4시간": 2.0, "1일": 2.5, "1주": 1.5,
+}
+CONF_WEIGHT = {"확실": 1.0, "강함": 0.8, "우세": 0.6, "약간": 0.3, "관망": 0.0}
+
 TF_LABELS_SHORT = {
     "1분": "1m", "5분": "5m", "15분": "15m",
     "1시간": "1H", "4시간": "4H", "1일": "1D", "1주": "1W",
@@ -221,42 +228,62 @@ RSI 파동 분석에서의 적용 규칙:
 • 트리거 (1분): 정확한 진입 타이밍 (RSI 극단값 + 구조 이탈)
 • ⚠️ 하위 프레임 다이버전스가 있어도 상위 프레임이 강한 하락이면 신뢰도 50% 감소
 
-━━━ 리포트 출력 형식 (반드시 이 구조 그대로) ━━━
-장황한 서술 금지. 표·불릿 위주로 스캔 가능하게. 아래 5개 섹션 순서를 지킬 것.
+━━━ 리포트 출력 형식 (의사결정 리포트 — 반드시 이 구조 그대로) ━━━
+이 리포트는 '분석'이 아니라 '매매 의사결정' 도구다. 방향이 맞아도 지금 들어가면
+안 되는 경우(추격 위험)를 분명히 구분하라. 위에 제공된 '🧭 기계 판정' 수치
+(방향성/진입적합도/손익비/진입금지)를 결론·판정·손익비에 반드시 반영하라.
+각 섹션은 짧게 — 불릿·표 위주, 장문 서술 금지.
 
-## 🎯 결론
-- **방향**: 숏 우위 / 롱 우위 / 관망 (+ 확신도: 확실/강함/우세/약함)
-- **근거**: 한 문장 (핵심 수치 1~2개 포함)
-- **핵심 레벨**: 진입 ___ · 손절 ___ · 목표 ___
+## 🎯 한 줄 결론
+한 문장: 방향 + 즉시 진입 여부 + 핵심 단서.
+예) "메인 방향은 숏이나 현재가는 저점 추격 구간 — 신규 진입은 1,747~1,761 반등 실패 확인 후만 유효."
+
+## 📋 매매 판정
+| 항목 | 값 |
+|------|-----|
+| 방향성 | 숏/롱/중립 (+점수) |
+| 즉시 진입 | 가능 / 대기 / 금지 |
+| 적합 전략 | 추격 / 반등실패 / 눌림 / 리테스트 / 관망 / 익절우선 |
+| 권장 사이즈 | 정상 / 축소 / 최소 / 진입금지 |
+| 리스크 | 낮음 / 보통 / 높음 |
+
+## 💰 핵심 가격대 & 손익비
+| 항목 | 가격 |
+|------|------|
+(현재가 / 진입후보 / 손절 / 관점무효화 / 1~3차 목표)
+- 현재가 추격 손익비, 추천 진입가 손익비를 R로 표기. **1R 미만이면 "진입 부적합" 명시.**
+
+## 🅰️ 메인 / 🅱️ 반대 시나리오
+- 🅰️ 메인(우세 방향): 조건 → 행동 → 목표
+- 🅱️ 반대(관점 깨짐): 무효화 가격 → 그 후 행동
+
+## ⚔️ 신호 충돌 해석
+상위 레짐 vs 하위 다이버전스 등 충돌을 1~2줄로 판정 (롱 전환인지, 단순 '추격 경고'인지 명확히).
 
 ## 📊 타임프레임 요약
-| TF | 방향 | 레짐 | 핵심 한마디 |
-|----|------|------|-------------|
-(1분·5분·15분·1시간·4시간·1일·1주 각 한 줄, '핵심'은 5단어 이내)
+| TF | 방향 | 레짐 | 핵심(5단어 이내) |
 
-## 🔍 주목 신호 (최대 3개)
-- 가장 중요한 것만 (CVD/OI/다이버전스/스퀴즈 등). 평범한 신호는 생략.
+## 💡 진입 전략 (관점별)
+- 스캘핑(1~5분) / 데이(15분~1시간) / 스윙(4시간~일봉) 각 한 줄: 조건·진입·목표·손절.
 
-## ⚠️ 리스크
-- 프레임 충돌 / 스퀴즈 위험 / 다이버전스 실패 / 펀딩 과열 등. 없으면 "특이사항 없음".
+## ✂️ 손절 & 익절
+- 손절(포지션 종료가) ≠ 관점 무효화(분석이 틀린 조건) 를 구분.
+- 익절은 부분익절 기준 포함 (1차 도달 시 일부, 리테스트 실패 시 보유, 반대 다이버전스 시 축소).
 
-## 💡 관점별 전략
-- **스캘핑(1~5분)**: 한 줄 (진입조건·방향)
-- **데이(15분~1시간)**: 한 줄
-- **스윙(4시간~일봉)**: 한 줄
+## 🚫 진입 금지 (지금 하면 안 되는 매매)
+- 기계 판정의 진입금지 조건 + 추가 위험. 예: 저점 추격 숏, 상위 하락 레짐 무시한 롱, 1R 미만 진입.
+
+## ✅ 최종 행동 지침 (3줄)
+- 지금 무엇을 / 어떤 조건에서 진입 / 어떤 조건에서 관점 약화.
 
 ━━━ 작성 규칙 ━━━
-• 결론을 맨 위에, 모든 판단은 수치 근거로
-• 표와 불릿 위주 — 문단형 장문 서술 금지
-• 원론적/교과서적 설명 금지, 같은 말 반복 금지
-• 마크다운 취소선(~~텍스트~~) 절대 금지
+• 방향성 점수와 즉시 진입 점수를 분리 — 방향이 맞아도 추격 불리하면 "방향 O, 즉시진입 X" 명시
+• 손절(포지션) ≠ 관점 무효화(분석) 항상 구분
+• 손익비 1R 미만 진입은 '진입 금지'로 분류
+• 표·불릿 위주, 장문 서술/반복 금지, 마크다운 취소선(~~) 금지
 • 다이버전스는 상태(후보/확정/실패)까지 명시
-• 레짐별 목표가 원칙 준수:
-  - 하락장 롱 목표 = EMA20/VWAP (과매수 목표 금지)
-  - 횡보장 = BB상단/RSI70 · 상승장 = 전고/과매수
-• CVD가 가격과 어긋나면(다이버전스 실패 가능) 반드시 '리스크'에 명시
-• 펀딩 과열(숏/롱 쏠림) 시 스퀴즈 위험을 '리스크'에 명시
-• 경계선(borderline) RSI가 있으면 '리스크'에 한 줄로 지적
+• 레짐별 목표가 원칙: 하락장 롱목표=EMA20/VWAP · 횡보=BB상단/RSI70 · 상승=전고
+• CVD가 가격과 어긋나거나, 펀딩 과열이거나, 경계선 RSI면 → '진입 금지' 또는 '리스크'에 반영
 
 ⚠️ 투자 조언이 아닌 기술적 분석 의견입니다."""
 
@@ -2744,9 +2771,195 @@ def generate_tf_cards(results):
     return "\n".join(cards)
 
 
+def assess_entry(results, ref_tf_order=("1시간", "15분", "4시간", "5분", "1일")):
+    """방향성과 '즉시 진입 적합도'를 분리 평가 (결정 레이어).
+
+    방향이 숏이어도 현재가에서 추격이 불리할 수 있음 → 별도 점수로 분리.
+    진입 금지 조건, 권장 포지션 사이즈, 리스크 등급, 현재가 추격 손익비(R)를 계산.
+
+    Returns:
+        dict | None: {
+            direction, direction_score, align,           # 방향성
+            entry_score, chase_ok, position_size, risk_level,  # 진입 적합도
+            blocks: [str],                               # 진입 금지/주의 조건
+            ref_tf, levels: {price, target, invalidation, support, resistance},
+            rr,                                          # 현재가 추격 손익비
+        }
+    """
+    valid = {tf: r for tf, r in results.items() if r and not r.get("error")}
+    if not valid:
+        return None
+
+    # ── 1) 방향 집계 (TF·확신 가중) ──
+    long_w = short_w = 0.0
+    for tf, r in valid.items():
+        w = DIR_TF_WEIGHT.get(tf, 1.0) * CONF_WEIGHT.get(r.get("confidence", ""), 0)
+        if r.get("position") == "숏":
+            short_w += w
+        elif r.get("position") == "롱":
+            long_w += w
+
+    if short_w > long_w and short_w - long_w > 0.5:
+        direction = "숏"
+    elif long_w > short_w and long_w - short_w > 0.5:
+        direction = "롱"
+    else:
+        direction = "중립"
+
+    total_w = sum(DIR_TF_WEIGHT.get(tf, 1.0) for tf in valid)
+    dom_w = short_w if direction == "숏" else long_w if direction == "롱" else 0.0
+    direction_score = round(min(100, dom_w / total_w * 100)) if total_w else 0
+    n_align = sum(1 for r in valid.values() if r.get("position") == direction)
+    align = f"{n_align}/{len(valid)}"
+
+    # ── 2) 기준 TF ──
+    ref_tf = next((tf for tf in ref_tf_order if tf in valid), None)
+    if direction == "중립" or ref_tf is None:
+        return {
+            "direction": direction, "direction_score": direction_score, "align": align,
+            "entry_score": 0, "chase_ok": False, "position_size": "관망",
+            "risk_level": "보통", "blocks": ["방향성 불명확 — 관망"],
+            "ref_tf": ref_tf, "levels": {}, "rr": None,
+        }
+
+    r = valid[ref_tf]
+    price = r.get("price", 0)
+    blocks = []
+    entry_score = direction_score
+
+    # ── 3) 즉시 진입 감점 + 진입 금지 조건 ──
+    if direction == "숏":
+        if r.get("bb_lower") and price <= r["bb_lower"] * 1.003:
+            entry_score -= 20
+            blocks.append(f"{ref_tf} BB하단 근접 — 추격 숏 위험")
+        for htf in ("1일", "4시간"):
+            rr = valid.get(htf)
+            if rr and rr.get("rsi", 50) <= 20:
+                entry_score -= 15
+                blocks.append(f"{htf} RSI 극과매도({rr['rsi']:.0f}) — 반등 리스크")
+                break
+        for tf2, rr in valid.items():
+            sd = rr.get("synth_div") or {}
+            if sd.get("overall_bias") == "BULLISH" and sd.get("confidence") in ("HIGH", "MEDIUM"):
+                entry_score -= 15
+                blocks.append(f"{tf2} 상승 다이버전스({sd['confidence']}) 생존 — 반등 리스크")
+                break
+        h4 = valid.get("4시간")
+        if h4 and (h4.get("vol_pattern") or {}).get("pattern") == "ABSORPTION":
+            entry_score -= 10
+            blocks.append("4시간 거래량 흡수 — 저점 추격 숏 감점")
+    else:  # 롱
+        if r.get("bb_upper") and price >= r["bb_upper"] * 0.997:
+            entry_score -= 20
+            blocks.append(f"{ref_tf} BB상단 근접 — 추격 롱 위험")
+        for htf in ("1일", "4시간"):
+            rr = valid.get(htf)
+            if rr and rr.get("rsi", 50) >= 80:
+                entry_score -= 15
+                blocks.append(f"{htf} RSI 극과매수({rr['rsi']:.0f}) — 조정 리스크")
+                break
+        for tf2, rr in valid.items():
+            sd = rr.get("synth_div") or {}
+            if sd.get("overall_bias") == "BEARISH" and sd.get("confidence") in ("HIGH", "MEDIUM"):
+                entry_score -= 15
+                blocks.append(f"{tf2} 하락 다이버전스({sd['confidence']}) 생존 — 조정 리스크")
+                break
+        h4 = valid.get("4시간")
+        if h4 and (h4.get("vol_pattern") or {}).get("pattern") == "CONTINUATION":
+            entry_score -= 10
+            blocks.append("4시간 하락지속형 거래량 — 고점 추격 롱 감점")
+
+    # ── 4) 현재가 추격 손익비(R) ──
+    targets = r.get("targets") or {}
+    rr_val = None
+    levels = {"price": round(price, 2)}
+    if direction == "숏":
+        tps = [t[1] for t in targets.get("short", []) if t[1] < price]
+        tgt = max(tps) if tps else None  # 가장 가까운 하단 목표
+        cands = [x for x in (r.get("ema20"), r.get("vwap")) if x and x > price]
+        inval = min(cands) if cands else None
+        levels["resistance"] = round(inval, 2) if inval else None
+        levels["target"] = round(tgt, 2) if tgt else None
+        if tgt and inval and inval > price:
+            risk = inval - price
+            reward = price - tgt
+            rr_val = round(reward / risk, 2) if risk > 0 else None
+    else:
+        tps = [t[1] for t in targets.get("long", []) if t[1] > price]
+        tgt = min(tps) if tps else None
+        cands = [x for x in (r.get("ema20"), r.get("vwap")) if x and x < price]
+        inval = max(cands) if cands else None
+        levels["support"] = round(inval, 2) if inval else None
+        levels["target"] = round(tgt, 2) if tgt else None
+        if tgt and inval and inval < price:
+            risk = price - inval
+            reward = tgt - price
+            rr_val = round(reward / risk, 2) if risk > 0 else None
+
+    if rr_val is not None and rr_val < 1.0:
+        entry_score -= 25
+        blocks.append(f"현재가 추격 손익비 {rr_val}R < 1 — 진입 부적합")
+
+    # ── 5) 포지션 사이즈 + 리스크 등급 ──
+    entry_score = max(0, min(100, entry_score))
+    n_blocks = len(blocks)
+    if entry_score >= 65 and n_blocks == 0:
+        position_size, chase_ok = "정상", True
+    elif entry_score >= 45:
+        position_size, chase_ok = "축소(50~70%)", False
+    elif entry_score >= 25:
+        position_size, chase_ok = "최소(30%↓)", False
+    else:
+        position_size, chase_ok = "진입 금지(대기)", False
+
+    atr_pct = r.get("atr_pct") or 0
+    if atr_pct >= 1.5 or n_blocks >= 2:
+        risk_level = "높음"
+    elif atr_pct >= 0.8 or n_blocks == 1:
+        risk_level = "보통"
+    else:
+        risk_level = "낮음"
+
+    return {
+        "direction": direction,
+        "direction_score": direction_score,
+        "align": align,
+        "entry_score": entry_score,
+        "chase_ok": chase_ok,
+        "position_size": position_size,
+        "risk_level": risk_level,
+        "blocks": blocks,
+        "ref_tf": ref_tf,
+        "levels": levels,
+        "rr": rr_val,
+    }
+
+
 def generate_summary_text(results):
     """RSI 파동 종합 판정 — 간결 스캔형 (관점별 포지션 + 레짐 + 핵심 경고)"""
     lines = ["### 📊 종합 판정"]
+
+    # ── 🧭 결정 판정 (방향 ≠ 즉시진입) ──
+    ea = assess_entry(results)
+    if ea:
+        dir_icon = "🔴" if ea["direction"] == "숏" else "🟢" if ea["direction"] == "롱" else "⚪"
+        if ea["chase_ok"]:
+            entry_icon, entry_txt = "✅", "즉시진입 가능"
+        elif ea["position_size"].startswith("진입 금지"):
+            entry_icon, entry_txt = "🚫", "추격 금지·반등 실패 대기"
+        else:
+            entry_icon, entry_txt = "⚠️", "추격 자제·대기"
+        rr_txt = f" · 추격 손익비 {ea['rr']}R" if ea["rr"] is not None else ""
+        lines.append(
+            f"> 🧭 **{dir_icon} {ea['direction']} 우위** (정렬 {ea['align']}, 방향성 {ea['direction_score']}) "
+            f"· {entry_icon} **{entry_txt}** (진입적합 {ea['entry_score']}){rr_txt}"
+        )
+        lines.append(
+            f"> 권장 포지션 **{ea['position_size']}** · 리스크 **{ea['risk_level']}**"
+        )
+        if ea["blocks"]:
+            lines.append(f"> ⛔ 진입 주의: {' / '.join(ea['blocks'][:3])}")
+        lines.append("")
 
     # ── 관점별 포지션 (한 줄씩) ──
     groups = {
@@ -2859,6 +3072,26 @@ def format_rsi_wave_for_ai(symbol, results):
             f = r["funding_analysis"]
             lines.append(f"💸 펀딩/프리미엄(심볼 공통): {f['label']} — {f['detail']}\n")
             break
+
+    # ── 🧭 기계 판정 (방향 ≠ 즉시진입 — 리포트에 반드시 반영) ──
+    ea = assess_entry(results)
+    if ea:
+        lv = ea.get("levels") or {}
+        lines.append("🧭 기계 판정 (아래 수치를 결론·진입판정·손익비에 반드시 반영하세요):")
+        lines.append(f"- 방향: {ea['direction']} (정렬 {ea['align']}, 방향성 점수 {ea['direction_score']})")
+        lines.append(f"- 즉시 진입 적합도: {ea['entry_score']}/100 → 추격 {'가능' if ea['chase_ok'] else '부적합(대기)'}")
+        lines.append(f"- 권장 포지션 크기: {ea['position_size']} | 리스크 등급: {ea['risk_level']}")
+        if ea.get("rr") is not None:
+            lines.append(f"- 현재가 추격 손익비: {ea['rr']}R ({'양호' if ea['rr'] >= 1.5 else '보통' if ea['rr'] >= 1 else '불리'})")
+        if lv:
+            level_bits = [f"현재가 {lv.get('price')}"]
+            if lv.get("resistance"): level_bits.append(f"저항/무효화 {lv['resistance']}")
+            if lv.get("support"): level_bits.append(f"지지/무효화 {lv['support']}")
+            if lv.get("target"): level_bits.append(f"1차 목표 {lv['target']}")
+            lines.append(f"- 기준 TF {ea['ref_tf']}: {' · '.join(level_bits)}")
+        if ea.get("blocks"):
+            lines.append(f"- 진입 금지/주의: {' / '.join(ea['blocks'])}")
+        lines.append("")
 
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
