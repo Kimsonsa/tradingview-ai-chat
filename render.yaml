@@ -6,6 +6,7 @@ services:
     name: tradeai-cloud-worker
     runtime: python
     plan: free
+    region: singapore   # ⚠️ 미국 리전은 Binance 451 차단 — 반드시 비미국(싱가포르 등)
     buildCommand: pip install -r requirements-cloud.txt
     startCommand: uvicorn cloud_worker:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
