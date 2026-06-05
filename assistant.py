@@ -553,6 +553,62 @@ with st.sidebar:
             st.session_state.model = model
             save_config({"api_key": st.session_state.api_key, "model": model})
 
+    # ── 신호 정확도 통계 (RSI 파동 가중치 검증) ──
+    with st.expander("📈 신호 통계", expanded=False):
+        st.caption("RSI 파동 신호의 실제 적중률을 추적합니다.")
+        if st.button("평가 갱신 & 통계 보기", use_container_width=True, key="eval_stats"):
+            try:
+                from core.signal_logger import evaluate_pending_signals, get_signal_stats
+                with st.spinner("성숙한 신호 평가 중..."):
+                    n_eval = evaluate_pending_signals()
+                    st.session_state._signal_stats = get_signal_stats()
+                    st.session_state._signal_eval_n = n_eval
+            except Exception as e:
+                st.session_state._signal_stats = {"error": str(e)}
+
+        stats = st.session_state.get("_signal_stats")
+        if stats and not stats.get("error"):
+            n_eval = st.session_state.get("_signal_eval_n", 0)
+            ov = stats.get("overall", {})
+            st.markdown(
+                f"**평가 완료: {stats.get('total_evaluated', 0)}건** "
+                f"(이번에 {n_eval}건 신규 평가)"
+            )
+            if ov.get("n"):
+                wr = ov.get("win_rate")
+                ar = ov.get("avg_return")
+                st.markdown(
+                    f"- 전체 적중률: **{wr if wr is not None else '-'}%** "
+                    f"(n={ov['n']})\n"
+                    f"- 평균 실현수익: **{ar if ar is not None else '-'}%** "
+                    f"(MFE {ov.get('avg_mfe')}% / MAE {ov.get('avg_mae')}%)"
+                )
+
+                def _render_group(title, group):
+                    rows = [(k, v) for k, v in group.items() if v.get("n")]
+                    if not rows:
+                        return
+                    lines = [f"\n**{title}**"]
+                    lines.append("| 항목 | 적중률 | 평균수익 | n |")
+                    lines.append("|---|---|---|---|")
+                    for k, v in sorted(rows, key=lambda x: -(x[1].get("n") or 0)):
+                        wr = v.get("win_rate")
+                        ar = v.get("avg_return")
+                        lines.append(
+                            f"| {k} | {wr if wr is not None else '-'}% | "
+                            f"{ar if ar is not None else '-'}% | {v['n']} |"
+                        )
+                    st.markdown("\n".join(lines))
+
+                _render_group("신호유형별", stats.get("by_signal_type", {}))
+                _render_group("확신등급별", stats.get("by_confidence", {}))
+                _render_group("레짐별", stats.get("by_regime", {}))
+                _render_group("타임프레임별", stats.get("by_timeframe", {}))
+            else:
+                st.info("아직 평가된 신호가 없습니다. 호라이즌(예: 1시간봉=24h)이 지나야 평가됩니다.")
+        elif stats and stats.get("error"):
+            st.warning(f"통계 오류: {stats['error']}")
+
 
 # ═══════════════════════════════════════════════
 # 메인 영역
@@ -877,6 +933,13 @@ if pending_rsi_wave and st.session_state.api_key:
     tf_label = " / ".join(WAVE_TIMEFRAMES)
     with st.spinner(f"🌊 RSI 파동 데이터 수집 중 ({tf_label})..."):
         rsi_results = analyze_rsi_wave(symbol)
+
+    # 신호 로깅 (가중치 검증용 — best-effort, 실패해도 분석 진행)
+    try:
+        from core.signal_logger import log_rsi_wave_signals
+        log_rsi_wave_signals(symbol, rsi_results)
+    except Exception:
+        pass
 
     # SVG + 카드 + 종합 판정 생성
     svg_html = generate_wave_svg(rsi_results)
