@@ -500,8 +500,23 @@ with st.sidebar:
                             st.session_state.active_tab = None
                     st.rerun()
 
-    # ── 거래 히스토리 ──
+    # ── 모바일 분석 리포트 (읽기 전용 — 탭 복원 안 함) ──
     history = list_sessions()
+    report_history = [s for s in history if s.get("status") == "report"]
+    if report_history:
+        st.markdown('<div class="history-label">🌊 분석 리포트 (모바일)</div>', unsafe_allow_html=True)
+        for s in report_history[:15]:
+            sym = s.get("symbol") or "?"
+            intv = s.get("interval") or ""
+            time_str = _format_time(s.get("created_at", ""))
+            btn_label = f"🌊 {sym} {intv}  {time_str}".replace("  ", " ").strip()
+            if st.session_state.viewing_history == s["id"]:
+                btn_label = "▸ " + btn_label
+            if st.button(btn_label, key=f"report_{s['id']}", use_container_width=True):
+                st.session_state.viewing_history = s["id"]
+                st.rerun()
+
+    # ── 거래 히스토리 ──
     closed_history = [s for s in history if s.get("status") == "closed"]
     if closed_history:
         st.markdown('<div class="history-label">📋 거래 히스토리</div>', unsafe_allow_html=True)
@@ -669,6 +684,11 @@ if st.session_state.viewing_history:
         else:
             result_icon = "📊"
 
+        # 모바일 분석 리포트는 거래 기록과 다르게 표시
+        is_report = hist_data.get("status") == "report"
+        if is_report:
+            result_icon = "🌊"
+
         # 헤더
         col1, col2 = st.columns([5, 1])
         with col1:
@@ -697,7 +717,9 @@ if st.session_state.viewing_history:
                 st.session_state.viewing_history = None
                 st.rerun()
 
-        st.markdown('<div class="readonly-banner">📖 읽기 전용 — 과거 거래 기록을 열람 중입니다</div>',
+        _banner_txt = ("📖 읽기 전용 — 모바일에서 요청한 분석 리포트입니다" if is_report
+                       else "📖 읽기 전용 — 과거 거래 기록을 열람 중입니다")
+        st.markdown(f'<div class="readonly-banner">{_banner_txt}</div>',
                     unsafe_allow_html=True)
 
         # 대화 내용 표시
