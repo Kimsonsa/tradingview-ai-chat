@@ -84,6 +84,61 @@ def fetch_klines(symbol="BTCUSDT", interval="1h", limit=210):
     return out
 
 
+def fetch_open_interest_hist(symbol="BTCUSDT", period="1h", limit=210):
+    """Binance Futures 미결제약정(OI) 히스토리.
+
+    period 지원: 5m,15m,30m,1h,2h,4h,6h,12h,1d (최근 30일).
+    실패/미지원 시 None 반환 (RSI 파동 분석이 OI 없이도 동작하도록).
+
+    Returns:
+        list[dict] | None: [{"time", "oi", "oi_value"}, ...]
+    """
+    url = "https://fapi.binance.com/futures/data/openInterestHist"
+    params = {"symbol": symbol, "period": period, "limit": limit}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        raw = res.json()
+        if not isinstance(raw, list) or not raw:
+            return None
+        return [{
+            "time": r["timestamp"],
+            "oi": float(r["sumOpenInterest"]),
+            "oi_value": float(r["sumOpenInterestValue"]),
+        } for r in raw]
+    except Exception:
+        return None
+
+
+def fetch_funding_premium(symbol="BTCUSDT"):
+    """현재 펀딩비 + 마크/인덱스 프리미엄 스냅샷 (심볼당 1회).
+
+    펀딩비 기준선은 0.01%(중립). 마이너스로 갈수록 숏 과열.
+
+    Returns:
+        dict | None: {funding_pct, mark_price, index_price, premium_pct, next_funding_time}
+    """
+    url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+    params = {"symbol": symbol}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        d = res.json()
+        mark = float(d["markPrice"])
+        index = float(d["indexPrice"])
+        funding = float(d["lastFundingRate"])
+        premium_pct = (mark - index) / index * 100 if index else 0
+        return {
+            "funding_pct": round(funding * 100, 4),  # % per 8h
+            "mark_price": mark,
+            "index_price": index,
+            "premium_pct": round(premium_pct, 4),
+            "next_funding_time": d.get("nextFundingTime"),
+        }
+    except Exception:
+        return None
+
+
 def calc_ema(closes, period):
     k = 2 / (period + 1)
     ema = [closes[0]]

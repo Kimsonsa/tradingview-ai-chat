@@ -21,6 +21,7 @@ import numpy as np
 from core.market_data import (
     fetch_klines, calc_rsi, calc_ema, calc_macd, calc_bollinger,
     calc_stoch_rsi, calc_atr, calc_adx, calc_obv, calc_cvd, calc_vwap,
+    fetch_open_interest_hist, fetch_funding_premium,
     INTERVAL_MAP,
 )
 
@@ -36,6 +37,11 @@ ARROW_OB = 75
 ARROW_OS = 25
 
 WAVE_TIMEFRAMES = ["1분", "5분", "15분", "1시간", "4시간", "1일", "1주"]
+
+# OI 히스토리 지원 period (Binance) — 1분/1주는 미지원이라 제외
+TF_OI_PERIOD = {
+    "5분": "5m", "15분": "15m", "1시간": "1h", "4시간": "4h", "1일": "1d",
+}
 
 TF_LABELS_SHORT = {
     "1분": "1m", "5분": "5m", "15분": "15m",
@@ -156,6 +162,27 @@ OBV는 매수/매도 방향이 포함되어 raw volume보다 다이버전스 판
 • DOWN_TREND: 강한 하락 (ADX≥20, EMA 역배열, -DI 우위)
 • DOWN_BIAS: 약한 하락
 • MIXED: 혼조
+
+━━━ 미결제약정(OI) — 신규 진입 vs 청산 구분 ━━━
+OI 변화는 그 가격 움직임이 신규 포지션 유입인지 기존 포지션 청산인지를 알려줌.
+RSI/CVD가 못 보는 차원이므로 방향 신뢰도 판정에 필수.
+  가격↑ + OI↑ = 신규 롱 유입 → 상승 추세 건강, 롱 신뢰
+  가격↑ + OI↓ = 숏커버 반등 → 숏 청산이 끌어올린 것, 상승 지속력 의심
+  가격↓ + OI↑ = 신규 숏 유입 → 하락 추세 건강, 숏 신뢰
+  가격↓ + OI↓ = 롱 청산/정리 → 투매 마무리, 반등 가능성 증가
+RSI 결합 예:
+  • RSI 과매도 + 상승 다이버전스 + OI 감소(롱 청산 마무리) → 반등 신뢰 ↑
+  • RSI 과매도 + 상승 다이버전스 + OI 증가(신규 숏 유입) → 다이버전스 실패 가능 ↑
+
+━━━ 펀딩비 / 프리미엄 — 포지션 쏠림 & 스퀴즈 위험 ━━━
+펀딩 기준선 0.01%(중립). 마이너스 = 숏 과열, 강한 양수 = 롱 과열.
+  강한 음수 펀딩 = 숏 쏠림 → 가격 조금만 올라도 숏커버 급등(숏스퀴즈) 위험
+  강한 양수 펀딩 = 롱 쏠림 → 롱스퀴즈(급락) 위험
+  중립 펀딩 = 포지션 쏠림 없음, 추세 지속 여지
+활용:
+  • 숏 과열일 땐 추격 숏 자제 (숏커버 반등 리스크), 과매도 반등 롱은 가점
+  • 롱 과열일 땐 추격 롱 자제 (롱스퀴즈 리스크)
+  • 마크-인덱스 프리미엄이 음전이면 선물이 현물보다 약세 — 하락 우위 보강
 
 ━━━ 핵심 패턴 ━━━
 • **베어 플래그**: 급락 후 약한 반등(되돌림<38.2%) → 재하락. RSI 다이버전스가 있어도 무시
@@ -1373,6 +1400,111 @@ def detect_squeeze_expansion(price, rsi, bb_upper, bb_lower, vwap, ema20, ema50,
 
 
 # ═══════════════════════════════════════════════
+# OI / 펀딩 분석
+# ═══════════════════════════════════════════════
+
+def analyze_oi_change(closes, oi_series, lookback=14):
+    """가격-OI 사분면 분류 — 그 움직임이 신규 진입인지 청산인지 구분
+
+    가격↑ + OI↑ = 신규 롱 유입 (상승 신뢰)
+    가격↑ + OI↓ = 숏커버 반등 (지속력 의심)
+    가격↓ + OI↑ = 신규 숏 유입 (하락 신뢰)
+    가격↓ + OI↓ = 롱 청산/정리 (투매 후 반등 가능)
+
+    Args:
+        closes: 종가 시계열 (klines)
+        oi_series: fetch_open_interest_hist 결과 (같은 period)
+        lookback: 변화 측정 봉 수
+
+    Returns:
+        dict | None: {quadrant, label, detail, bias, oi_change_pct, price_change_pct}
+    """
+    if not oi_series or len(oi_series) < lookback + 1 or len(closes) < lookback + 1:
+        return None
+
+    oi_vals = [p["oi"] for p in oi_series]
+    oi_now = oi_vals[-1]
+    oi_then = oi_vals[-1 - lookback]
+    price_now = closes[-1]
+    price_then = closes[-1 - lookback]
+
+    if oi_then == 0 or price_then == 0:
+        return None
+
+    oi_chg = (oi_now - oi_then) / oi_then * 100
+    price_chg = (price_now - price_then) / price_then * 100
+
+    price_up = price_chg > 0
+    oi_up = oi_chg > 0
+
+    if price_up and oi_up:
+        quadrant, label, bias = "NEW_LONG", "신규 롱 유입", "BULLISH"
+        detail = "가격↑ + OI↑ — 신규 매수 진입, 상승 추세 건강"
+    elif price_up and not oi_up:
+        quadrant, label, bias = "SHORT_COVER", "숏커버 반등", "WEAK_BULLISH"
+        detail = "가격↑ + OI↓ — 숏 청산 반등, 상승 지속력 의심"
+    elif not price_up and oi_up:
+        quadrant, label, bias = "NEW_SHORT", "신규 숏 유입", "BEARISH"
+        detail = "가격↓ + OI↑ — 신규 매도 진입, 하락 추세 건강"
+    else:
+        quadrant, label, bias = "LONG_LIQ", "롱 청산/정리", "WEAK_BULLISH"
+        detail = "가격↓ + OI↓ — 롱 청산 마무리, 투매 후 반등 가능"
+
+    return {
+        "quadrant": quadrant,
+        "label": label,
+        "detail": detail,
+        "bias": bias,
+        "oi_change_pct": round(oi_chg, 2),
+        "price_change_pct": round(price_chg, 2),
+    }
+
+
+def analyze_funding(funding_info):
+    """펀딩비/프리미엄 해석 — 포지션 쏠림 & 스퀴즈 위험
+
+    펀딩 기준선 0.01%(중립). 강한 양수 = 롱 과열(롱스퀴즈 위험),
+    마이너스 = 숏 과열(숏스퀴즈 위험).
+
+    Returns:
+        dict | None: {bias, squeeze_risk, label, detail, funding_pct, premium_pct}
+    """
+    if not funding_info:
+        return None
+
+    fr = funding_info.get("funding_pct", 0)
+    premium = funding_info.get("premium_pct", 0)
+
+    if fr >= 0.05:
+        bias, squeeze_risk, label = "LONG_CROWDED", "LONG_SQUEEZE", "🔴 롱 과열"
+        detail = f"펀딩 {fr:+.4f}% — 롱 쏠림, 롱스퀴즈(급락) 위험"
+    elif fr >= 0.02:
+        bias, squeeze_risk, label = "LONG_BIAS", None, "🟠 약한 롱 편향"
+        detail = f"펀딩 {fr:+.4f}% — 롱 약우위"
+    elif fr <= -0.05:
+        bias, squeeze_risk, label = "SHORT_CROWDED", "SHORT_SQUEEZE", "🟢 숏 과열"
+        detail = f"펀딩 {fr:+.4f}% — 숏 쏠림, 숏스퀴즈(급등) 위험"
+    elif fr <= -0.01:
+        bias, squeeze_risk, label = "SHORT_BIAS", None, "🟡 약한 숏 편향"
+        detail = f"펀딩 {fr:+.4f}% — 숏 약우위"
+    else:
+        bias, squeeze_risk, label = "NEUTRAL", None, "⚪ 중립"
+        detail = f"펀딩 {fr:+.4f}% — 포지션 쏠림 없음"
+
+    if premium:
+        detail += f" | 프리미엄 {premium:+.4f}%"
+
+    return {
+        "bias": bias,
+        "squeeze_risk": squeeze_risk,
+        "label": label,
+        "detail": detail,
+        "funding_pct": fr,
+        "premium_pct": premium,
+    }
+
+
+# ═══════════════════════════════════════════════
 # 목표가 산출
 # ═══════════════════════════════════════════════
 
@@ -1473,6 +1605,8 @@ def determine_position(r):
     ema50 = r["ema50"]
     vwap = r.get("vwap")
     macd_hist = r.get("macd_hist", 0)
+    oi_an = r.get("oi_analysis")
+    fund = r.get("funding_analysis")
 
     # ════════════════════════
     # 롱 점수 (0~100+)
@@ -1657,6 +1791,32 @@ def determine_position(r):
     elif div_v2 and div_v2.get("type") == "HIDDEN_BULL_DIV":
         short_score -= 8  # 상승 지속 → 숏 감점
 
+    # 16) OI 변화 — 신규 진입 vs 청산 (NEW)
+    if oi_an:
+        q = oi_an["quadrant"]
+        if q == "NEW_SHORT":          # 가격↓+OI↑ 신규 숏 → 하락 신뢰
+            short_score += 12
+        elif q == "NEW_LONG":         # 가격↑+OI↑ 신규 롱 → 상승 신뢰
+            long_score += 12
+        elif q == "LONG_LIQ":         # 가격↓+OI↓ 롱 청산 마무리 → 반등 가능
+            long_score += 6
+            short_score -= 5          # 추격 숏 신뢰 약화
+        elif q == "SHORT_COVER":      # 가격↑+OI↓ 숏커버 → 지속력 약함
+            long_score += 2
+
+    # 17) 펀딩 스퀴즈 리스크 (NEW)
+    if fund:
+        if fund["squeeze_risk"] == "SHORT_SQUEEZE":   # 숏 과열 → 숏커버 급등 위험
+            short_score -= 10
+            long_score += 6
+        elif fund["squeeze_risk"] == "LONG_SQUEEZE":  # 롱 과열 → 롱스퀴즈 급락 위험
+            long_score -= 10
+            short_score += 6
+        elif fund["bias"] == "SHORT_BIAS":
+            short_score += 2
+        elif fund["bias"] == "LONG_BIAS":
+            long_score += 2
+
     # ════════════════════════
     # 최종 판정
     # ════════════════════════
@@ -1814,6 +1974,10 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
     """
     results = {}
 
+    # ── 펀딩/프리미엄 (심볼당 1회, 모든 TF 공통) ──
+    funding_info = fetch_funding_premium(symbol)
+    funding_analysis = analyze_funding(funding_info)
+
     for tf_label in WAVE_TIMEFRAMES:
         bi = INTERVAL_MAP.get(tf_label)
         if not bi:
@@ -1915,6 +2079,11 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
 
             # ── CVD 다이버전스 (NEW) ──
             cvd_div = detect_cvd_divergence(closes, cvd_series) if cvd_series else None
+
+            # ── OI 변화 (NEW — 매칭 period만 조회) ──
+            oi_period = TF_OI_PERIOD.get(tf_label)
+            oi_series = fetch_open_interest_hist(symbol, oi_period) if oi_period else None
+            oi_analysis = analyze_oi_change(closes, oi_series) if oi_series else None
 
             # ── 베어 플래그 ──
             bear_flag = detect_bear_flag(candles, rsi_vals, atr, e20, vwap)
@@ -2022,6 +2191,10 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                 "obv_div": obv_div,
                 "cvd_div": cvd_div,
                 "synth_div": synthesize_divergence(div_v2, vol_div, obv_div, cvd_div),
+                # ── v4 OI / 펀딩 ──
+                "oi_analysis": oi_analysis,
+                "funding_analysis": funding_analysis,
+                "funding_info": funding_info,
             }
 
             # 포지션 판정 (v2 점수 모델)
@@ -2494,6 +2667,15 @@ def generate_tf_cards(results):
         if obv_div:
             synth_div_str += f"\n> {obv_div['label']} — {obv_div['detail']}"
 
+        # OI 변화 + 펀딩 (NEW)
+        oi_str = ""
+        oi_an = r.get("oi_analysis")
+        if oi_an:
+            oi_str += f"\n> 🔗 **OI {oi_an['label']}** ({oi_an['oi_change_pct']:+.1f}%) — {oi_an['detail']}"
+        fund = r.get("funding_analysis")
+        if fund and fund.get("squeeze_risk"):
+            oi_str += f"\n> 💸 **{fund['label']}** — {fund['detail']}"
+
         # 롱/숏 점수
         long_s = r.get("long_score", 0)
         short_s = r.get("short_score", 0)
@@ -2533,7 +2715,7 @@ def generate_tf_cards(results):
 
 📍 **{r['cycle_desc']}** — {r['rsi_strategy_valid']}
 🎯 **{signal_label}** (롱:{long_s} / 숏:{short_s}){htf_str}
-📐 {rsi_tgt}{target_str}{div_str}{bear_flag_str}{squeeze_str}{synth_div_str}
+📐 {rsi_tgt}{target_str}{div_str}{bear_flag_str}{squeeze_str}{synth_div_str}{oi_str}
 
 ---
 """
@@ -2586,6 +2768,16 @@ def generate_summary_text(results):
             regime_summary.append(f"{TF_LABELS_SHORT.get(tf, tf)}:{regime_color}{regime_label}")
     if regime_summary:
         sections.append(f"\n📊 **레짐 현황**: {' | '.join(regime_summary)}")
+
+    # ── 펀딩/프리미엄 (심볼 단위 — 1회만 표시) ──
+    fund = None
+    for tf in WAVE_TIMEFRAMES:
+        r = results.get(tf)
+        if r and not r.get("error") and r.get("funding_analysis"):
+            fund = r["funding_analysis"]
+            break
+    if fund:
+        sections.append(f"💸 **펀딩/프리미엄**: {fund['label']} — {fund['detail']}")
 
     # ── 상위-하위 프레임 충돌 ──
     conflicts = []
@@ -2664,6 +2856,14 @@ def format_rsi_wave_for_ai(symbol, results):
         f"[🌊 RSI 파동 분석 v2] {symbol} — 레짐 기반 멀티 타임프레임 RSI 사이클 분석\n",
         "아래 7개 타임프레임의 RSI 사이클 상태를 **시장 레짐별로** 분석해주세요.\n",
     ]
+
+    # ── 펀딩/프리미엄 (심볼 단위 — 헤더에 1회) ──
+    for tf in WAVE_TIMEFRAMES:
+        r = results.get(tf)
+        if r and not r.get("error") and r.get("funding_analysis"):
+            f = r["funding_analysis"]
+            lines.append(f"💸 펀딩/프리미엄(심볼 공통): {f['label']} — {f['detail']}\n")
+            break
 
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
@@ -2783,6 +2983,14 @@ def format_rsi_wave_for_ai(symbol, results):
         if cvd_div_data:
             lines.append(f"📊 CVD 다이버전스(최우선): {cvd_div_data['label']} — {cvd_div_data['detail']}")
 
+        # OI 변화 (NEW)
+        oi_an = r.get("oi_analysis")
+        if oi_an:
+            lines.append(
+                f"🔗 OI: {oi_an['label']} "
+                f"(OI {oi_an['oi_change_pct']:+.1f}%, 가격 {oi_an['price_change_pct']:+.1f}%) — {oi_an['detail']}"
+            )
+
         # 종합 다이버전스 (NEW)
         synth = r.get("synth_div")
         if synth and synth.get("overall_bias") != "NEUTRAL":
@@ -2801,6 +3009,8 @@ def format_rsi_wave_for_ai(symbol, results):
     lines.append("히든 다이버전스는 반전 신호가 아닌 추세 지속 신호임을 명확히 구분하세요.")
     lines.append("CVD/OBV/거래량 다이버전스가 RSI 다이버전스와 일치/충돌하는지 반드시 언급하세요.")
     lines.append("특히 CVD(실제 시장가 체결)가 가격을 따라가는지 확인 — RSI 상승 다이버전스가 있어도 CVD가 저점 갱신이면 다이버전스 실패 가능성이 높습니다.")
+    lines.append("OI 변화로 그 움직임이 신규 진입(추세 신뢰)인지 청산/숏커버(지속력 의심)인지 구분하세요.")
+    lines.append("펀딩이 극단(숏 과열/롱 과열)이면 스퀴즈 반전 위험을 반드시 경고하세요 — 추격 진입 감점 요인입니다.")
     lines.append("각 관점(스캘핑/데이트레이딩/스윙/장기)별 현재 사이클 위치와 매매 방향을 구체적으로 판단하세요.")
     lines.append("상위-하위 프레임 간 충돌이나 다이버전스가 있으면 반드시 언급하세요.")
     lines.append("진입/청산 타점이 보이면 구체적 가격을 제시하세요.")
