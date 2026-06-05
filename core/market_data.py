@@ -61,27 +61,50 @@ def parse_requested_timeframes(user_message, current_interval="15분"):
     return result
 
 
+# klines 엔드포인트 — 선물(fapi) 우선, 지역차단(451: 미국 등) 시 비차단 스팟 미러로 폴백.
+# data-api.binance.vision 은 인증·지역제한 없는 공개 스팟 데이터 미러로, 캔들 배열 포맷이 동일.
+_KLINE_ENDPOINTS = [
+    "https://fapi.binance.com/fapi/v1/klines",          # 0: 선물 (로컬/비미국)
+    "https://data-api.binance.vision/api/v3/klines",    # 1: 스팟 미러 (US 클라우드 등 차단 우회)
+]
+_kline_pref = {"idx": 0}  # 한 번 성공한 엔드포인트를 이후에도 우선 사용
+
+
 def fetch_klines(symbol="BTCUSDT", interval="1h", limit=210):
-    """Binance Futures에서 캔들 데이터 가져오기"""
-    url = f"https://fapi.binance.com/fapi/v1/klines"
+    """Binance 캔들 데이터 가져오기.
+
+    선물 API(fapi)가 지역차단(451)되는 환경(미국 Streamlit Cloud 등)에서는
+    차단되지 않는 공개 스팟 미러(data-api.binance.vision)로 자동 폴백한다.
+    두 엔드포인트의 kline 배열 포맷이 동일하므로 파싱 로직은 공통.
+    """
+    # 이전에 성공한 엔드포인트를 먼저 시도 → 실패 시 나머지
+    order = [_kline_pref["idx"], 1 - _kline_pref["idx"]]
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    res = requests.get(url, params=params, timeout=10)
-    res.raise_for_status()
-    raw = res.json()
-    # Binance kline 배열: [openTime, O, H, L, C, V, closeTime, quoteV, trades,
-    #                      takerBuyBaseV(9), takerBuyQuoteV(10), ignore]
-    # taker buy = 시장가 매수 체결량 → 봉별 델타 = 매수 - 매도 = 2*takerBuy - V
-    out = []
-    for r in raw:
-        vol = float(r[5])
-        taker_buy = float(r[9]) if len(r) > 9 else vol / 2
-        out.append({
-            "time": r[0], "open": float(r[1]), "high": float(r[2]),
-            "low": float(r[3]), "close": float(r[4]), "volume": vol,
-            "taker_buy": taker_buy,
-            "delta": 2 * taker_buy - vol,
-        })
-    return out
+    last_err = None
+    for i in order:
+        try:
+            res = requests.get(_KLINE_ENDPOINTS[i], params=params, timeout=10)
+            res.raise_for_status()
+            raw = res.json()
+            _kline_pref["idx"] = i  # 성공한 엔드포인트 기억
+            # Binance kline 배열: [openTime, O, H, L, C, V, closeTime, quoteV, trades,
+            #                      takerBuyBaseV(9), takerBuyQuoteV(10), ignore]
+            # taker buy = 시장가 매수 체결량 → 봉별 델타 = 매수 - 매도 = 2*takerBuy - V
+            out = []
+            for r in raw:
+                vol = float(r[5])
+                taker_buy = float(r[9]) if len(r) > 9 else vol / 2
+                out.append({
+                    "time": r[0], "open": float(r[1]), "high": float(r[2]),
+                    "low": float(r[3]), "close": float(r[4]), "volume": vol,
+                    "taker_buy": taker_buy,
+                    "delta": 2 * taker_buy - vol,
+                })
+            return out
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err
 
 
 def fetch_open_interest_hist(symbol="BTCUSDT", period="1h", limit=210):
