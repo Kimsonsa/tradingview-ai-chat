@@ -37,6 +37,26 @@ def health():
     return {"status": "ok", "service": "tradeai-cloud-worker"}
 
 
+@app.get("/diag")
+def diag():
+    """진단: 이 서버에서 Binance 선물 API 접근 가능한지 확인 (지역차단 451 여부)."""
+    import requests
+    out = {}
+    try:
+        r = requests.get(
+            "https://fapi.binance.com/fapi/v1/klines",
+            params={"symbol": "BTCUSDT", "interval": "1h", "limit": 2},
+            timeout=10,
+        )
+        out["binance_status"] = r.status_code
+        out["binance_body"] = r.text[:200]
+        out["accessible"] = (r.status_code == 200)
+    except Exception as e:
+        out["binance_error"] = str(e)[:300]
+        out["accessible"] = False
+    return out
+
+
 def _check_token(token):
     if _WORKER_TOKEN and token != _WORKER_TOKEN:
         raise HTTPException(status_code=401, detail="invalid worker token")
