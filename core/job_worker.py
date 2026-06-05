@@ -12,7 +12,7 @@ import os
 import json
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.session_manager import _get_conn, save_session, create_session
 from core.rsi_wave import (
@@ -22,7 +22,8 @@ from core.rsi_wave import (
 from core.ai_client import analyze_chart
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".tradeai_config.json")
-POLL_INTERVAL = 5  # 초
+POLL_INTERVAL = 5     # 초
+STALE_SECONDS = 180   # processing 점유 후 이 시간 지나면 죽은 워커로 보고 재점유
 
 _worker_started = False
 _worker_lock = threading.Lock()
@@ -100,16 +101,20 @@ def _claim_job():
         return None
     try:
         c = conn.cursor()
+        now = datetime.now()
+        stale_iso = (now - timedelta(seconds=STALE_SECONDS)).isoformat()
+        # pending 작업 OR 점유 후 멈춘(죽은 워커) stale 작업을 재점유 → self-healing
         c.execute("""
             UPDATE analysis_jobs
                SET status='processing', started_at=%s, updated_at=CURRENT_TIMESTAMP
              WHERE id = (
                    SELECT id FROM analysis_jobs
                     WHERE status='pending'
+                       OR (status='processing' AND COALESCE(started_at, '') < %s)
                     ORDER BY requested_at
                     LIMIT 1 FOR UPDATE SKIP LOCKED)
             RETURNING id, symbol
-        """, (datetime.now().isoformat(),))
+        """, (now.isoformat(), stale_iso))
         row = c.fetchone()
         conn.commit()
         return (row[0], row[1]) if row else None
