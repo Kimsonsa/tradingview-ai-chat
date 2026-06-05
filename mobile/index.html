@@ -180,6 +180,40 @@
       padding-bottom: calc(20px + var(--safe-bottom));
     }
 
+    /* 채팅 입력 바 (상세화면 하단 고정) */
+    .chat-bar {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      padding-bottom: calc(10px + var(--safe-bottom));
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .chat-input {
+      flex: 1;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 10px 14px;
+      font-size: 15px;
+      background: var(--bg-card);
+      color: var(--text);
+      outline: none;
+    }
+    .chat-input:focus { border-color: var(--accent); }
+    .chat-send {
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 20px;
+      padding: 0 18px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .chat-send:active { opacity: 0.7; }
+
     /* ═══════════════════════════════════════════ */
     /* Setup Screen                               */
     /* ═══════════════════════════════════════════ */
@@ -804,6 +838,12 @@
       <button class="header-btn" onclick="refreshDetail()" title="새로고침">🔄</button>
     </div>
     <div class="content" id="detail-content"></div>
+    <div class="chat-bar">
+      <input id="chat-input" class="chat-input" type="text"
+             placeholder="메시지 입력 (실시간 데이터로 분석)..."
+             onkeydown="if(event.key==='Enter')sendChat()">
+      <button class="chat-send" onclick="sendChat()">전송</button>
+    </div>
   </div>
 
   <!-- Toast -->
@@ -823,6 +863,7 @@
     if (!CONFIG.anonKey) CONFIG.anonKey = DEFAULT_ANON_KEY;
     let currentSessions = [];
     let currentDetailId = null;
+    let currentDetailSymbol = '';
 
     function loadConfig() {
       try {
@@ -925,6 +966,55 @@
         }
       } catch (e) { /* 네트워크 일시 오류 — 계속 폴링 */ }
       setTimeout(() => pollJob(id, tries + 1), 3000);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* AI 채팅 (현재 세션에 메시지 추가)              */
+    /* ═══════════════════════════════════════════ */
+    async function sendChat() {
+      const input = document.getElementById('chat-input');
+      const text = (input.value || '').trim();
+      if (!text || !currentDetailId) return;
+      input.value = '';
+      const jobId = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      try {
+        const resp = await fetch(`${SUPABASE_URL}/rest/v1/analysis_jobs`, {
+          method: 'POST',
+          headers: { ...apiHeaders(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({
+            id: jobId, job_type: 'chat', session_id: currentDetailId,
+            prompt: text, symbol: currentDetailSymbol || '',
+            status: 'pending', requested_at: new Date().toISOString(), source: 'mobile',
+          }),
+        });
+        if (!resp.ok) { showToast(`전송 실패 (${resp.status})`); return; }
+        if (CONFIG.workerUrl) {
+          fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
+        }
+        showToast('💬 전송됨 — 답변 생성 중...');
+        pollChat(jobId, 0);
+      } catch (e) {
+        showToast('전송 오류: ' + e.message);
+      }
+    }
+
+    async function pollChat(jobId, tries) {
+      if (tries > 60) {
+        showToast(CONFIG.workerUrl ? '⏱ 시간 초과 — 다시 시도하세요' : '⏱ 시간 초과 — 데스크탑 앱 확인');
+        return;
+      }
+      try {
+        const url = `${SUPABASE_URL}/rest/v1/analysis_jobs?id=eq.${encodeURIComponent(jobId)}&select=status,error`;
+        const r = await fetch(url, { headers: apiHeaders() });
+        const job = (await r.json())[0];
+        if (job && job.status === 'done') {
+          showToast('✅ 답변 완료');
+          if (currentDetailId) loadDetail(currentDetailId);
+          return;
+        }
+        if (job && job.status === 'error') { showToast('오류: ' + (job.error || '알 수 없음')); return; }
+      } catch (e) { /* 계속 폴링 */ }
+      setTimeout(() => pollChat(jobId, tries + 1), 3000);
     }
 
     /* ═══════════════════════════════════════════ */
@@ -1132,6 +1222,7 @@
 
       try {
         const session = await fetchSessionDetail(id);
+        currentDetailSymbol = session.symbol || '';
         const sym = session.symbol || '?';
         const intv = session.interval || '';
         titleEl.textContent = `${sym} ${intv}`;

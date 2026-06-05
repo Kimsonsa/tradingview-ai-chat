@@ -74,6 +74,12 @@ def ensure_jobs_table():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # 채팅 지원 컬럼 (기존 테이블에도 추가 — 멱등)
+        for coldef in ("job_type TEXT DEFAULT 'rsi_wave'", "prompt TEXT", "session_id TEXT"):
+            try:
+                c.execute(f"ALTER TABLE analysis_jobs ADD COLUMN IF NOT EXISTS {coldef}")
+            except Exception:
+                pass
         # 모바일은 anon 키로 INSERT/SELECT 해야 하므로 권한 부여
         try:
             c.execute("GRANT ALL ON analysis_jobs TO anon, authenticated")
@@ -113,11 +119,11 @@ def _claim_job():
                        OR (status='processing' AND COALESCE(started_at, '') < %s)
                     ORDER BY requested_at
                     LIMIT 1 FOR UPDATE SKIP LOCKED)
-            RETURNING id, symbol
+            RETURNING id, symbol, COALESCE(job_type, 'rsi_wave'), prompt, session_id
         """, (now.isoformat(), stale_iso))
         row = c.fetchone()
         conn.commit()
-        return (row[0], row[1]) if row else None
+        return row if row else None  # (id, symbol, job_type, prompt, session_id)
     except Exception:
         conn.rollback()
         return None
@@ -191,6 +197,57 @@ def run_analysis(symbol):
     return sess["id"]
 
 
+def run_chat(session_id, prompt, symbol):
+    """텍스트 AI 채팅 — 기존 세션에 사용자 메시지 추가 후 analyze_chart로 답변 생성.
+    PC 채팅과 동일한 함수(analyze_chart) 사용. 차트 이미지는 없음(실시간 데이터 기반)."""
+    from core.session_manager import load_session
+    from core.market_data import get_multi_timeframe_context, parse_requested_timeframes
+
+    sess = load_session(session_id) if session_id else None
+    if not sess:
+        sess = create_session(symbol=symbol or "BTCUSDT")
+        sess["status"] = "report"
+    sess.setdefault("messages", [])
+    if not sess.get("symbol"):
+        sess["symbol"] = symbol or "BTCUSDT"
+
+    sym = sess.get("symbol") or "BTCUSDT"
+    interval = sess.get("interval") or "15분"
+
+    # 사용자 메시지 추가
+    sess["messages"].append({"role": "user", "content": prompt})
+
+    cfg = _load_config()
+    api_key = cfg.get("api_key")
+    model = cfg.get("model", "gpt-5.5")
+    if not api_key:
+        sess["messages"].append({
+            "role": "assistant",
+            "content": "⚠️ 서버에 OpenAI 키가 설정되지 않아 답변할 수 없습니다.",
+        })
+        save_session(sess)
+        return sess["id"]
+
+    # 실시간 시장 데이터 수집 (질문에서 타임프레임 감지)
+    try:
+        tfs = parse_requested_timeframes(prompt, interval)
+        market_data = get_multi_timeframe_context(sym, tfs, interval)
+    except Exception:
+        market_data = ""
+
+    try:
+        resp = "".join(analyze_chart(
+            api_key=api_key, model=model,
+            messages=sess["messages"], market_data=market_data,
+        ))
+    except Exception as e:
+        resp = f"⚠️ AI 오류: {e}"
+
+    sess["messages"].append({"role": "assistant", "content": str(resp)})
+    save_session(sess)
+    return sess["id"]
+
+
 def process_pending_jobs(max_jobs=3):
     """대기 중인 작업을 최대 max_jobs개 처리. 반환: 처리한 수"""
     if not ensure_jobs_table():
@@ -200,9 +257,12 @@ def process_pending_jobs(max_jobs=3):
         claim = _claim_job()
         if not claim:
             break
-        job_id, symbol = claim
+        job_id, symbol, job_type, prompt, session_id = claim
         try:
-            sid = run_analysis((symbol or "BTCUSDT").upper())
+            if job_type == "chat":
+                sid = run_chat(session_id, prompt or "", (symbol or "BTCUSDT").upper())
+            else:
+                sid = run_analysis((symbol or "BTCUSDT").upper())
             _finish_job(job_id, session_id=sid)
         except Exception as e:
             _finish_job(job_id, error=str(e)[:500])
