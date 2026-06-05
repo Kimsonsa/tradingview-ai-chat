@@ -2611,6 +2611,131 @@ def generate_wave_svg(results):
     return "\n".join(svg_parts)
 
 
+def generate_price_ladder_svg(results):
+    """가격 레벨 & 진입 지도 — 세로축=가격 좌표평면 (HTML 프래그먼트 반환).
+
+    현재가 기준 위쪽 저항(빨강)·아래쪽 지지/목표(초록)를 공간 배치하고,
+    진입 시나리오마다 손익비(R) 배지를 표시. 빈 데이터면 "" 반환.
+    파동 맵 HTML 문서의 </body> 앞에 끼워넣는 프래그먼트 형태.
+    """
+    lm = build_level_map(results)
+    if not lm:
+        return ""
+    es = build_entry_scenarios(results)
+    ea = assess_entry(results)
+
+    price = lm["ref_price"]
+    above = lm["above"][:5]
+    below = lm["below"][:5]
+    levels = above + below
+    if not levels:
+        return ""
+
+    direction = ea["direction"] if ea else "중립"
+
+    # 진입가 → (R, grade), 목표가
+    entry_info = {}
+    target_price = None
+    if es:
+        for s in es["scenarios"]:
+            entry_info[s["entry"]] = (s["R"], s["grade"])
+        if es["scenarios"]:
+            target_price = es["scenarios"][0]["target"]
+
+    all_p = [c["price"] for c in levels] + [price]
+    pmax, pmin = max(all_p), min(all_p)
+    span = (pmax - pmin) or price * 0.01
+    pad = span * 0.12
+    pmax += pad
+    pmin -= pad
+
+    W, H = 720, 430
+    PAD_T, PAD_B = 50, 22
+    PLOT_H = H - PAD_T - PAD_B
+    LINE_X1, LINE_X2 = 118, 548
+
+    def y(p):
+        return PAD_T + PLOT_H * (pmax - p) / (pmax - pmin)
+
+    grade_color = {"양호": "#22C55E", "보통": "#F59E0B", "부적합": "#EF4444", "산출불가": "#94A3B8"}
+    p = []
+    p.append(f'''<div style="width:100%;max-width:720px;margin:10px auto 0;border-radius:16px;
+                overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.25);">
+<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;">
+  <defs>
+    <linearGradient id="bg_grad2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/><stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+    <filter id="glow2"><feGaussianBlur stdDeviation="1.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="{W}" height="{H}" fill="url(#bg_grad2)" rx="16"/>''')
+
+    cy = y(price)
+    # ── 방향별 존 음영 (수익 zone / 위험 zone) ──
+    if direction == "숏":
+        p.append(f'<rect x="{LINE_X1}" y="{cy:.0f}" width="{LINE_X2 - LINE_X1}" height="{H - PAD_B - cy:.0f}" fill="rgba(34,197,94,0.06)"/>')
+        p.append(f'<rect x="{LINE_X1}" y="{PAD_T}" width="{LINE_X2 - LINE_X1}" height="{cy - PAD_T:.0f}" fill="rgba(239,68,68,0.06)"/>')
+    elif direction == "롱":
+        p.append(f'<rect x="{LINE_X1}" y="{PAD_T}" width="{LINE_X2 - LINE_X1}" height="{cy - PAD_T:.0f}" fill="rgba(34,197,94,0.06)"/>')
+        p.append(f'<rect x="{LINE_X1}" y="{cy:.0f}" width="{LINE_X2 - LINE_X1}" height="{H - PAD_B - cy:.0f}" fill="rgba(239,68,68,0.06)"/>')
+
+    # ── 타이틀 + 방향 배지 ──
+    p.append(f'<text x="20" y="30" fill="#E0E0F0" font-size="15" font-family="Inter,sans-serif" font-weight="600">📐 가격 레벨 &amp; 진입 지도</text>')
+    if direction != "중립":
+        dcol = "#EF4444" if direction == "숏" else "#22C55E"
+        p.append(f'<rect x="{W-110}" y="14" width="92" height="22" rx="11" fill="{dcol}" opacity="0.18"/>')
+        p.append(f'<text x="{W-64}" y="29" fill="{dcol}" font-size="12" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">{direction} 우위</text>')
+
+    # ── 레벨 라인 ──
+    for c in levels:
+        lp = c["price"]
+        ly = y(lp)
+        is_res = lp > price
+        col = "#EF4444" if is_res else "#22C55E"
+        conf = c["n"] >= 3
+        sw = "1.6" if conf else "1"
+        dash = "1,0" if conf else "5,5"
+        p.append(f'<line x1="{LINE_X1}" y1="{ly:.1f}" x2="{LINE_X2}" y2="{ly:.1f}" stroke="{col}" stroke-width="{sw}" stroke-dasharray="{dash}" opacity="0.55"/>')
+        # 가격 라벨 (왼쪽)
+        star = "⭐" if conf else ""
+        p.append(f'<text x="{LINE_X1-8}" y="{ly+4:.1f}" fill="{col}" font-size="12" font-family="Inter,sans-serif" text-anchor="end" font-weight="{"600" if conf else "500"}">{lp:,.1f}{star}</text>')
+        # 출처 태그 (오른쪽)
+        tags = ", ".join(c["labels"][:3])
+        p.append(f'<text x="{LINE_X2+8}" y="{ly+4:.1f}" fill="#8888AA" font-size="9.5" font-family="Inter,sans-serif">{tags}</text>')
+        # 목표 마커
+        if target_price is not None and abs(lp - target_price) < 0.01:
+            p.append(f'<text x="{(LINE_X1+LINE_X2)/2:.0f}" y="{ly-5:.1f}" fill="#22C55E" font-size="11" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">🎯 1차 목표</text>')
+        # 진입 R 배지
+        if lp in entry_info:
+            R, grade = entry_info[lp]
+            bc = grade_color.get(grade, "#94A3B8")
+            rtxt = f"{R}R" if R is not None else "-"
+            bx = (LINE_X1 + LINE_X2) / 2 - 38
+            p.append(f'<rect x="{bx:.0f}" y="{ly-10:.1f}" width="76" height="18" rx="9" fill="{bc}" opacity="0.2"/>')
+            p.append(f'<text x="{bx+38:.0f}" y="{ly+3:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">진입 {rtxt}·{grade}</text>')
+
+    # ── 현재가 라인 (강조) ──
+    p.append(f'<line x1="{LINE_X1-4}" y1="{cy:.1f}" x2="{LINE_X2+4}" y2="{cy:.1f}" stroke="#FFFFFF" stroke-width="2" filter="url(#glow2)"/>')
+    p.append(f'<rect x="{LINE_X1-92}" y="{cy-11:.1f}" width="82" height="22" rx="6" fill="#2962FF"/>')
+    p.append(f'<text x="{LINE_X1-51:.0f}" y="{cy+4:.1f}" fill="#fff" font-size="11.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">현재 {price:,.1f}</text>')
+
+    # 현재가 추격 배지
+    if price in entry_info:
+        R, grade = entry_info[price]
+        bc = grade_color.get(grade, "#94A3B8")
+        rtxt = f"{R}R" if R is not None else "-"
+        bx = (LINE_X1 + LINE_X2) / 2 - 50
+        p.append(f'<rect x="{bx:.0f}" y="{cy-10:.1f}" width="100" height="18" rx="9" fill="{bc}" opacity="0.22"/>')
+        p.append(f'<text x="{bx+50:.0f}" y="{cy+3:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">추격 {rtxt}·{grade}</text>')
+
+    # ── 범례 ──
+    p.append(f'<text x="20" y="{H-7}" fill="#777799" font-size="9" font-family="Inter,sans-serif">🔴저항  🟢지지·목표  ⭐컨플루언스  ·  R=목표거리÷손절거리</text>')
+
+    p.append("</svg></div>")
+    return "\n".join(p)
+
+
 # ═══════════════════════════════════════════════
 # 텍스트 생성
 # ═══════════════════════════════════════════════
@@ -3121,9 +3246,17 @@ def generate_summary_text(results):
             chase_R = chase["R"] if chase else None
         rr_txt = f" · 추격 손익비 {chase_R}R" if chase_R is not None else ""
 
+        def _bar(v, n=10):
+            fill = max(0, min(n, round(v / 100 * n)))
+            return "█" * fill + "░" * (n - fill)
+
         lines.append(
-            f"> 🧭 **{dir_icon} {ea['direction']} 우위** (정렬 {ea['align']}, 방향성 {ea['direction_score']}) "
-            f"· {entry_icon} **{entry_txt}** (진입적합 {ea['entry_score']}){rr_txt}"
+            f"> 🧭 **{dir_icon} {ea['direction']} 우위** (정렬 {ea['align']}) "
+            f"· {entry_icon} **{entry_txt}**{rr_txt}"
+        )
+        lines.append(
+            f"> 방향성 `{_bar(ea['direction_score'])}` {ea['direction_score']} · "
+            f"즉시진입 `{_bar(ea['entry_score'])}` {ea['entry_score']}"
         )
         lines.append(
             f"> 권장 포지션 **{ea['position_size']}** · 리스크 **{ea['risk_level']}**"

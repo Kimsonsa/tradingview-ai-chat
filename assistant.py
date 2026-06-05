@@ -11,7 +11,7 @@ from core.capture import capture_tradingview, image_to_base64, parse_window_titl
 from core.market_data import get_market_context, get_multi_timeframe_context, parse_requested_timeframes
 from core.ai_client import analyze_chart, analyze_trade_summary
 from core.rsi_wave import (
-    analyze_rsi_wave, generate_wave_svg, generate_tf_cards,
+    analyze_rsi_wave, generate_wave_svg, generate_price_ladder_svg, generate_tf_cards,
     generate_summary_text, format_rsi_wave_for_ai,
     RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
 )
@@ -697,7 +697,8 @@ if st.session_state.viewing_history:
         for msg in hist_data.get("messages", []):
             with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
                 if msg.get("rsi_wave_html"):
-                    components.html(msg["rsi_wave_html"], height=500, scrolling=False)
+                    _wh = 960 if "진입 지도" in msg["rsi_wave_html"] else 500
+                    components.html(msg["rsi_wave_html"], height=_wh, scrolling=False)
                 st.markdown(msg["content"])
 
     else:
@@ -813,7 +814,8 @@ def _shorten_prompt(content):
 for msg in sess.get("messages", []):
     with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
         if msg.get("rsi_wave_html"):
-            components.html(msg["rsi_wave_html"], height=500, scrolling=False)
+            _wh = 960 if "진입 지도" in msg["rsi_wave_html"] else 500
+            components.html(msg["rsi_wave_html"], height=_wh, scrolling=False)
         display = _shorten_prompt(msg["content"]) if msg["role"] == "user" else msg["content"]
         st.markdown(display)
         if msg.get("image"):
@@ -969,17 +971,22 @@ if pending_rsi_wave and st.session_state.api_key:
 
     # SVG + 카드 + 종합 판정 생성
     svg_html = generate_wave_svg(rsi_results)
+    ladder_frag = generate_price_ladder_svg(rsi_results)  # 가격 레벨 & 진입 지도
+    # 파동 맵 HTML 문서에 가격 지도 프래그먼트를 주입 (한 iframe에 함께 렌더)
+    if ladder_frag:
+        combined_html = svg_html.replace("</body>", ladder_frag + "\n</body>")
+    else:
+        combined_html = svg_html
     tf_cards = generate_tf_cards(rsi_results)
     summary_text = generate_summary_text(rsi_results)
-    combined_html = svg_html  # SVG 시각화
 
     # AI용 데이터 포맷팅
     ai_prompt_text = format_rsi_wave_for_ai(symbol, rsi_results)
 
     # AI 분석 스트리밍
     with st.chat_message("assistant", avatar="🤖"):
-        # 1) SVG 파동 맵
-        components.html(svg_html, height=500, scrolling=False)
+        # 1) SVG 파동 맵 + 가격 레벨/진입 지도
+        components.html(combined_html, height=960 if ladder_frag else 500, scrolling=False)
         # 2) 종합 판정
         st.markdown(summary_text)
         st.markdown("---")
