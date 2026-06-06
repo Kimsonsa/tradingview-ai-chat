@@ -584,6 +584,152 @@ def get_signal_stats(symbol=None):
 
 
 # ═══════════════════════════════════════════════
+# C — 지표별 귀인 (어느 지표 해석이 틀렸나)
+# ═══════════════════════════════════════════════
+
+# 귀인 대상 지표(features.tf 의 키) — 값별 조건부 적중률을 본다
+_ATTR_KEYS = [
+    "cvd_bias", "oi_quadrant", "div_v2", "cvd_div", "obv_div",
+    "squeeze", "failed_div", "regime",
+]
+
+
+def get_attribution_stats(symbol=None):
+    """지표별 조건부 적중률 — "이 지표가 X라고 했을 때 실제 적중률".
+    낮은 값 = 그 지표 해석이 자주 틀렸다는 신호(가중치 하향 후보).
+
+    Returns: {n, by_indicator: {지표: {값: {win_rate, n}}}}
+    """
+    rows = [r for r in _all_evaluated(symbol) if r.get("features")]
+    samples = []
+    for r in rows:
+        if r.get("outcome") not in ("WIN", "LOSS"):
+            continue
+        try:
+            tf = (json.loads(r["features"]) or {}).get("tf") or {}
+        except Exception:
+            continue
+        samples.append((tf, r["outcome"]))
+
+    by_ind = {}
+    for key in _ATTR_KEYS:
+        groups = {}
+        for tf, oc in samples:
+            v = tf.get(key)
+            if v is None or v == "":
+                v = "(없음)"
+            v = str(v)
+            g = groups.setdefault(v, [0, 0])  # [wins, total]
+            g[1] += 1
+            if oc == "WIN":
+                g[0] += 1
+        kv = {v: {"win_rate": round(w / t * 100, 1), "n": t}
+              for v, (w, t) in groups.items() if t}
+        if kv:
+            by_ind[key] = kv
+    return {"n": len(samples), "by_indicator": by_ind}
+
+
+# ═══════════════════════════════════════════════
+# B — 타이밍 평가 (추천 진입 시나리오가 트리거·적중했나)
+# ═══════════════════════════════════════════════
+
+def _simulate_scenario(direction, entry, stop, target, window):
+    """진입 시나리오를 캔들 구간으로 시뮬레이션.
+    반환: 'WIN' / 'LOSS' / 'NOT_TRIGGERED' / None(불가)"""
+    if not window or not entry or not stop or not target:
+        return None
+    triggered = False
+    for c in window:
+        hi, lo = c["high"], c["low"]
+        if not triggered:
+            # 숏: 진입가(위)까지 반등 시 체결 / 롱: 진입가(아래)까지 눌림 시 체결
+            if direction == "숏" and hi >= entry:
+                triggered = True
+            elif direction == "롱" and lo <= entry:
+                triggered = True
+            else:
+                continue
+        # 체결 이후 같은/다음 캔들에서 목표·손절 판정 (보수적으로 손절 우선)
+        if direction == "숏":
+            if hi >= stop:
+                return "LOSS"
+            if lo <= target:
+                return "WIN"
+        else:
+            if lo <= stop:
+                return "LOSS"
+            if hi >= target:
+                return "WIN"
+    return "NOT_TRIGGERED" if triggered is False else "OPEN"
+
+
+def get_timing_stats(symbol=None, max_groups=40, eval_tf="15분", window_min=1440):
+    """추천 진입 시나리오의 실제 트리거·적중률을 캔들로 시뮬레이션(저장 없이 계산).
+    '추격(현재가) vs 반등실패 대기(시나리오)' 중 어느 쪽이 나았는지의 토대.
+
+    Returns: {n_analyses, triggered, not_triggered, win, loss, win_rate, by_grade}
+    """
+    rows = [r for r in _all_evaluated(symbol) if r.get("features")]
+    # 분석 단위(심볼+분)로 verdict 1개만
+    seen = {}
+    for r in rows:
+        key = (r.get("symbol"), (r.get("created_at") or "")[:16])
+        if key in seen:
+            continue
+        try:
+            v = (json.loads(r["features"]) or {}).get("verdict") or {}
+        except Exception:
+            continue
+        if v.get("scenarios") and v.get("direction") in ("롱", "숏"):
+            seen[key] = (r, v)
+
+    out = {"n_analyses": 0, "triggered": 0, "not_triggered": 0,
+           "win": 0, "loss": 0, "win_rate": None, "by_grade": {}}
+    bi = INTERVAL_MAP.get(eval_tf, "15m")
+    tf_min = TF_MINUTES.get(eval_tf, 15)
+    now = datetime.now()
+
+    for (sym, _ts), (r, v) in list(seen.items())[:max_groups]:
+        try:
+            created = datetime.fromisoformat(r["created_at"])
+        except Exception:
+            continue
+        if created + timedelta(minutes=window_min) > now:
+            continue  # 아직 구간이 안 끝남
+        span_min = (now - created).total_seconds() / 60
+        limit = min(1500, int(span_min / tf_min) + 10)
+        try:
+            candles = fetch_klines(sym, bi, max(limit, 30))
+        except Exception:
+            continue
+        start_ms = created.timestamp() * 1000
+        end_ms = (created + timedelta(minutes=window_min)).timestamp() * 1000
+        window = [c for c in candles if start_ms <= c["time"] <= end_ms]
+        if not window:
+            continue
+        out["n_analyses"] += 1
+        direction = v.get("direction")
+        for s in v["scenarios"]:
+            res = _simulate_scenario(direction, s.get("entry"), s.get("stop"),
+                                     s.get("target"), window)
+            grade = s.get("grade") or "?"
+            g = out["by_grade"].setdefault(grade, {"win": 0, "loss": 0, "n": 0})
+            if res == "WIN":
+                out["win"] += 1; out["triggered"] += 1; g["win"] += 1; g["n"] += 1
+            elif res == "LOSS":
+                out["loss"] += 1; out["triggered"] += 1; g["loss"] += 1; g["n"] += 1
+            elif res == "NOT_TRIGGERED":
+                out["not_triggered"] += 1
+    dec = out["win"] + out["loss"]
+    out["win_rate"] = round(out["win"] / dec * 100, 1) if dec else None
+    for g in out["by_grade"].values():
+        d = g["win"] + g["loss"]
+        g["win_rate"] = round(g["win"] / d * 100, 1) if d else None
+    return out
+
+
+# ═══════════════════════════════════════════════
 # 공용 API — 가중치 조정 제안 (반자동, 사람 승인)
 # ═══════════════════════════════════════════════
 

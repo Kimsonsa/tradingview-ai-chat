@@ -76,6 +76,7 @@ def stats(symbol: str = "", evaluate: int = 0):
     try:
         from core.signal_logger import (
             get_signal_stats, get_weight_suggestions, evaluate_pending_signals,
+            get_attribution_stats, get_timing_stats,
         )
         sym = symbol or None
         if evaluate:
@@ -83,9 +84,15 @@ def stats(symbol: str = "", evaluate: int = 0):
                 evaluate_pending_signals(max_groups=8)
             except Exception:
                 pass
+        try:
+            timing = get_timing_stats(sym, max_groups=20)
+        except Exception:
+            timing = {}
         return {
             "ok": True,
             "stats": get_signal_stats(sym),
+            "attribution": get_attribution_stats(sym),   # C: 지표별 귀인
+            "timing": timing,                            # B: 진입 타이밍
             "suggestions": get_weight_suggestions(sym),
         }
     except Exception as e:

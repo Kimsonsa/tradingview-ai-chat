@@ -598,11 +598,17 @@ with st.sidebar:
             try:
                 from core.signal_logger import (
                     evaluate_pending_signals, get_signal_stats, get_weight_suggestions,
+                    get_attribution_stats, get_timing_stats,
                 )
                 with st.spinner("성숙한 신호 평가 중..."):
                     n_eval = evaluate_pending_signals()
                     st.session_state._signal_stats = get_signal_stats()
                     st.session_state._signal_suggestions = get_weight_suggestions()
+                    st.session_state._signal_attr = get_attribution_stats()
+                    try:
+                        st.session_state._signal_timing = get_timing_stats(max_groups=20)
+                    except Exception:
+                        st.session_state._signal_timing = {}
                     st.session_state._signal_eval_n = n_eval
             except Exception as e:
                 st.session_state._signal_stats = {"error": str(e)}
@@ -653,6 +659,44 @@ with st.sidebar:
                 _render_group("타임프레임별", stats.get("by_timeframe", {}))
                 _render_group("종목별", stats.get("by_symbol", {}))
                 st.caption(f"⚠️ = 표본 {_MIN_N}건 미만(우연일 수 있어 신뢰 낮음)")
+
+                # ── B: 추천 진입 타이밍 ──
+                tm = st.session_state.get("_signal_timing") or {}
+                if tm.get("n_analyses"):
+                    st.markdown(f"\n**🎯 추천 진입 타이밍 (분석 {tm['n_analyses']}건)**")
+                    wr = tm.get("win_rate")
+                    st.markdown(
+                        f"- 시나리오 적중률: **{wr if wr is not None else '-'}%** "
+                        f"(승 {tm.get('win', 0)} / 패 {tm.get('loss', 0)} · 미트리거 {tm.get('not_triggered', 0)})"
+                    )
+                    bg = tm.get("by_grade") or {}
+                    if bg:
+                        lines = ["| 등급 | 적중률 | 승/패 |", "|---|---|---|"]
+                        for g, v in bg.items():
+                            gwr = v.get("win_rate")
+                            lines.append(f"| {g} | {gwr if gwr is not None else '-'}% | {v.get('win',0)}/{v.get('loss',0)} |")
+                        st.markdown("\n".join(lines))
+
+                # ── C: 지표별 귀인 ──
+                attr = st.session_state.get("_signal_attr") or {}
+                if attr.get("n"):
+                    st.markdown(f"\n**🔍 지표별 귀인 — 어느 지표가 맞았나 (n={attr['n']})**")
+                    st.caption("각 지표 값의 실제 적중률. 낮을수록 그 해석이 자주 틀렸다는 뜻 → 가중치 하향 후보.")
+                    _LBL = {"cvd_bias": "CVD 편향", "oi_quadrant": "OI 사분면",
+                            "div_v2": "RSI 다이버전스", "cvd_div": "CVD 다이버전스",
+                            "obv_div": "OBV 다이버전스", "squeeze": "스퀴즈",
+                            "failed_div": "다이버전스 실패", "regime": "레짐"}
+                    for key, kv in (attr.get("by_indicator") or {}).items():
+                        rows = sorted([(v, d) for v, d in kv.items() if d.get("n")],
+                                      key=lambda x: -(x[1].get("n") or 0))
+                        if not rows:
+                            continue
+                        lines = [f"\n*{_LBL.get(key, key)}*", "| 값 | 적중률 | n |", "|---|---|---|"]
+                        for v, d in rows:
+                            n = d.get("n") or 0
+                            n_disp = f"{n} ⚠️" if n < _MIN_N else f"{n}"
+                            lines.append(f"| {v} | {d.get('win_rate')}% | {n_disp} |")
+                        st.markdown("\n".join(lines))
             else:
                 st.info("아직 평가된 신호가 없습니다. 호라이즌(예: 1시간봉=24h)이 지나야 평가됩니다.")
 
