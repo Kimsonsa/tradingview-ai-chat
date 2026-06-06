@@ -468,6 +468,27 @@
       background: var(--red-bg);
       color: var(--red);
     }
+    /* 성적표 */
+    .stat-overall {
+      text-align: center;
+      padding: 22px 16px 18px;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .stat-big { font-size: 40px; font-weight: 800; color: var(--accent); letter-spacing: -1px; }
+    .stat-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 4px; }
+    .stat-group { padding: 14px 16px 4px; }
+    .stat-group-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+    .stat-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .stat-table th {
+      text-align: right; font-weight: 600; color: var(--text-muted);
+      font-size: 11.5px; padding: 4px 8px; border-bottom: 1px solid var(--border-light);
+    }
+    .stat-table th:first-child { text-align: left; }
+    .stat-table td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--border-light); color: var(--text); }
+    .stat-table td:first-child { text-align: left; font-weight: 500; }
+    .stat-table tr.low-n td { color: var(--text-muted); opacity: 0.7; }
+    .stat-sugg { font-size: 12.5px; color: var(--text); padding: 6px 0; line-height: 1.5; }
+    .stat-note { font-size: 11.5px; color: var(--text-muted); padding: 12px 16px 24px; line-height: 1.5; }
 
     /* Empty state */
     .empty-state {
@@ -869,6 +890,7 @@
         <div class="header-subtitle" id="list-subtitle">모바일 뷰어</div>
       </div>
       <button class="header-btn" onclick="newAnalysis()" title="새 분석 요청">🌊</button>
+      <button class="header-btn" onclick="openStats()" title="신호 성적표">📊</button>
       <button class="header-btn" onclick="loadSessions()" title="새로고침" id="refresh-btn">🔄</button>
       <button class="header-btn" onclick="showSetup()" title="설정">⚙️</button>
     </div>
@@ -898,6 +920,16 @@
              onkeydown="if(event.key==='Enter')sendChat()">
       <button id="chat-send" class="chat-send" onclick="sendChat()">전송</button>
     </div>
+  </div>
+
+  <!-- ═══════════ STATS SCREEN (신호 성적표) ═══════════ -->
+  <div id="stats-screen" class="screen hidden">
+    <div class="header">
+      <button class="header-btn" onclick="showList()" title="뒤로">←</button>
+      <div class="header-title">📊 신호 성적표</div>
+      <button class="header-btn" onclick="openStats()" title="새로고침">🔄</button>
+    </div>
+    <div class="content" id="stats-content"></div>
   </div>
 
   <!-- Toast -->
@@ -1203,6 +1235,79 @@
         }
       } catch (e) { /* 계속 폴링 */ }
       setTimeout(() => pollRsi(jobId, tries + 1), 3000);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* 신호 성적표 (RSI 신호 실측 적중률)             */
+    /* ═══════════════════════════════════════════ */
+    async function openStats() {
+      showScreen('stats-screen');
+      const el = document.getElementById('stats-content');
+      el.innerHTML = '<div style="padding:28px;text-align:center;color:var(--text-muted)">불러오는 중...</div>';
+      if (!CONFIG.workerUrl) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-icon">⚙️</div><div class="empty-title">워커 URL이 필요해요</div><div class="empty-desc">설정(⚙️)에서 클라우드 워커 URL을<br>입력하면 성적표를 볼 수 있어요</div></div>';
+        return;
+      }
+      try {
+        const base = CONFIG.workerUrl.replace(/\/+$/, '');
+        const r = await fetch(base + '/stats?evaluate=1');
+        const d = await r.json();
+        if (!d.ok) {
+          el.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">통계 오류</div><div class="empty-desc">' + escapeHtml(d.error || '') + '</div></div>';
+          return;
+        }
+        renderStats(el, d.stats, d.suggestions);
+      } catch (e) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-icon">😴</div><div class="empty-title">서버 깨우는 중</div><div class="empty-desc">잠시 후 🔄을 다시 눌러주세요<br>(절전에서 깨어나는 데 ~1분)</div></div>';
+      }
+    }
+
+    function _statGroupHtml(title, group) {
+      const rows = Object.entries(group || {}).filter(([k, v]) => v && v.n);
+      if (!rows.length) return '';
+      rows.sort((a, b) => (b[1].n || 0) - (a[1].n || 0));
+      let h = `<div class="stat-group"><div class="stat-group-title">${title}</div>`;
+      h += '<table class="stat-table"><tr><th>항목</th><th>적중률</th><th>평균</th><th>n</th></tr>';
+      for (const [k, v] of rows) {
+        const low = (v.n || 0) < 20;
+        const wr = v.win_rate == null ? '-' : v.win_rate + '%';
+        const ar = v.avg_return == null ? '-' : v.avg_return + '%';
+        h += `<tr class="${low ? 'low-n' : ''}"><td>${escapeHtml(k)}</td><td>${wr}</td><td>${ar}</td><td>${v.n}${low ? ' ⚠️' : ''}</td></tr>`;
+      }
+      h += '</table></div>';
+      return h;
+    }
+
+    function renderStats(el, stats, suggestions) {
+      if (!stats || !stats.total_evaluated) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-icon">⏳</div><div class="empty-title">아직 채점된 신호가 없어요</div><div class="empty-desc">분석을 누를 때마다 신호가 쌓이고,<br>일정 시간이 지나면 실제 차트와 대조해<br>자동으로 채점됩니다</div></div>';
+        return;
+      }
+      const o = stats.overall || {};
+      let h = `<div class="stat-overall">
+        <div class="stat-big">${o.win_rate == null ? '-' : o.win_rate + '%'}</div>
+        <div class="stat-sub">전체 적중률 · 평가 ${stats.total_evaluated}건</div>
+        <div class="stat-sub">평균수익 ${o.avg_return == null ? '-' : o.avg_return + '%'} · MFE ${o.avg_mfe ?? '-'}% / MAE ${o.avg_mae ?? '-'}%</div>
+      </div>`;
+      h += _statGroupHtml('📈 롱/숏 방향별', stats.by_position);
+      h += _statGroupHtml('타임프레임별', stats.by_timeframe);
+      h += _statGroupHtml('신뢰도별', stats.by_confidence);
+      h += _statGroupHtml('신호유형별', stats.by_signal_type);
+      h += _statGroupHtml('레짐별', stats.by_regime);
+      h += _statGroupHtml('종목별', stats.by_symbol);
+      if (suggestions) {
+        if (!suggestions.ready) {
+          h += `<div class="stat-note">가중치 제안: 표본 수집 중 — ${suggestions.total || 0}/${suggestions.min_samples || 20}건. ${suggestions.needed || 0}건 더 모이면 시작.</div>`;
+        } else if (suggestions.suggestions && suggestions.suggestions.length) {
+          h += '<div class="stat-group"><div class="stat-group-title">💡 가중치 조정 제안</div>';
+          for (const s of suggestions.suggestions) {
+            h += `<div class="stat-sugg">${s.direction === 'DOWN' ? '⬇️' : '⬆️'} <b>${escapeHtml(s.target)}</b> — ${escapeHtml(s.message)}</div>`;
+          }
+          h += '</div>';
+        }
+      }
+      h += '<div class="stat-note">⚠️ = 표본 20건 미만(우연일 수 있어 신뢰 낮음). 분석을 자주 할수록 정확해집니다.</div>';
+      el.innerHTML = h;
     }
 
     /* ═══════════════════════════════════════════ */

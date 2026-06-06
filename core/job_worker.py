@@ -300,11 +300,33 @@ def process_pending_jobs(max_jobs=3):
 # 백그라운드 스레드 (앱에서 1회 기동)
 # ═══════════════════════════════════════════════
 
+EVAL_INTERVAL = 300   # 초 — 성숙 신호 자동 평가 주기(성적표 데이터 자동 숙성)
+_last_eval = [0.0]
+
+
+def _maybe_evaluate():
+    """주기적으로 성숙한 RSI 신호를 평가해 성적표 데이터를 자동으로 익힌다.
+    (예전엔 '신호 통계' 페이지를 열 때만 평가됐다.)"""
+    now = time.time()
+    if now - _last_eval[0] < EVAL_INTERVAL:
+        return
+    _last_eval[0] = now
+    try:
+        from core.signal_logger import evaluate_pending_signals
+        evaluate_pending_signals(max_groups=14)
+    except Exception:
+        pass
+
+
 def _loop():
     ensure_jobs_table()
     while True:
         try:
             process_pending_jobs()
+        except Exception:
+            pass
+        try:
+            _maybe_evaluate()
         except Exception:
             pass
         time.sleep(POLL_INTERVAL)

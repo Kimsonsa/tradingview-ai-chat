@@ -69,6 +69,29 @@ def health():
     return {"status": "ok", "service": "tradeai-cloud-worker"}
 
 
+@app.get("/stats")
+def stats(symbol: str = "", evaluate: int = 0):
+    """RSI 신호 성적표 — 모바일 성적표 화면이 읽는다.
+    evaluate=1 이면 호출 시 성숙 신호 평가도 1회 수행(소량)."""
+    try:
+        from core.signal_logger import (
+            get_signal_stats, get_weight_suggestions, evaluate_pending_signals,
+        )
+        sym = symbol or None
+        if evaluate:
+            try:
+                evaluate_pending_signals(max_groups=8)
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "stats": get_signal_stats(sym),
+            "suggestions": get_weight_suggestions(sym),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
 @app.get("/diag")
 def diag():
     """진단: 이 서버에서 Binance 선물 API 접근 가능한지 확인 (지역차단 451 여부)."""

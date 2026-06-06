@@ -625,6 +625,8 @@ with st.sidebar:
                     f"(MFE {ov.get('avg_mfe')}% / MAE {ov.get('avg_mae')}%)"
                 )
 
+                _MIN_N = 20  # 이 미만은 표본부족 → 신뢰하지 말 것
+
                 def _render_group(title, group):
                     rows = [(k, v) for k, v in group.items() if v.get("n")]
                     if not rows:
@@ -635,16 +637,22 @@ with st.sidebar:
                     for k, v in sorted(rows, key=lambda x: -(x[1].get("n") or 0)):
                         wr = v.get("win_rate")
                         ar = v.get("avg_return")
+                        n = v.get("n") or 0
+                        # 표본부족은 ⚠️로 표시(소표본 적중률 착시 방지)
+                        n_disp = f"{n} ⚠️" if n < _MIN_N else f"{n}"
                         lines.append(
                             f"| {k} | {wr if wr is not None else '-'}% | "
-                            f"{ar if ar is not None else '-'}% | {v['n']} |"
+                            f"{ar if ar is not None else '-'}% | {n_disp} |"
                         )
                     st.markdown("\n".join(lines))
 
+                _render_group("📈 롱/숏 방향별", stats.get("by_position", {}))
                 _render_group("신호유형별", stats.get("by_signal_type", {}))
                 _render_group("확신등급별", stats.get("by_confidence", {}))
                 _render_group("레짐별", stats.get("by_regime", {}))
                 _render_group("타임프레임별", stats.get("by_timeframe", {}))
+                _render_group("종목별", stats.get("by_symbol", {}))
+                st.caption(f"⚠️ = 표본 {_MIN_N}건 미만(우연일 수 있어 신뢰 낮음)")
             else:
                 st.info("아직 평가된 신호가 없습니다. 호라이즌(예: 1시간봉=24h)이 지나야 평가됩니다.")
 

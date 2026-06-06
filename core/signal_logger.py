@@ -507,10 +507,12 @@ def get_signal_stats(symbol=None):
     return {
         "total_evaluated": len(rows),
         "overall": _agg(rows),
+        "by_position": _group_agg(rows, "position"),      # 롱/숏 '우세' 방향별 적중률
         "by_signal_type": _group_agg(rows, "signal_type"),
         "by_confidence": _group_agg(rows, "confidence"),
         "by_regime": _group_agg(rows, "regime"),
         "by_timeframe": _group_agg(rows, "timeframe"),
+        "by_symbol": _group_agg(rows, "symbol"),
     }
 
 
