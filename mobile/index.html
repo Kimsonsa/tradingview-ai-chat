@@ -1005,6 +1005,7 @@
     /* AI 채팅 (현재 세션에 메시지 추가)              */
     /* ═══════════════════════════════════════════ */
     let chatPending = false;
+    let pendingChatJobId = null;   // 백그라운드 복귀 시 폴링 재개용
 
     function setChatBusy(busy) {
       chatPending = busy;
@@ -1051,6 +1052,7 @@
       appendChatBubbles(text);     // 내 질문 + "답변 생성 중" 즉시 표시
       setChatBusy(true);
       const jobId = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      pendingChatJobId = jobId;     // 복귀 시 이 작업 폴링을 재개
       try {
         const resp = await fetch(`${SUPABASE_URL}/rest/v1/analysis_jobs`, {
           method: 'POST',
@@ -1077,9 +1079,14 @@
     }
 
     async function pollChat(jobId, tries) {
+      // 복귀 후 재개로 같은 작업에 대해 폴링이 중복 시작되면 최신 것만 유지
+      if (pendingChatJobId && jobId !== pendingChatJobId) return;
       if (tries > 60) {
-        setPendingText('⏱ 시간 초과 — 다시 시도하세요' + (CONFIG.workerUrl ? '' : ' (데스크탑 앱 확인)'));
+        // 시간 초과여도 답변은 서버에 저장됐을 수 있음 → 안내 후 한 번 갱신 시도
+        setPendingText('⏱ 응답이 늦어요 — 잠시 후 🔄 새로고침하거나 앱을 다시 열어보세요'
+          + (CONFIG.workerUrl ? ' (서버 절전에서 깨어나는 중일 수 있어요)' : ' (데스크탑 앱 확인)'));
         setChatBusy(false);
+        pendingChatJobId = null;
         return;
       }
       try {
@@ -1088,12 +1095,14 @@
         const job = (await r.json())[0];
         if (job && job.status === 'done') {
           setChatBusy(false);
+          pendingChatJobId = null;
           if (currentDetailId) loadDetail(currentDetailId);  // 실제 대화로 갱신
           return;
         }
         if (job && job.status === 'error') {
           setPendingText('⚠️ 오류: ' + (job.error || '알 수 없음'));
           setChatBusy(false);
+          pendingChatJobId = null;
           return;
         }
       } catch (e) { /* 계속 폴링 */ }
@@ -1585,6 +1594,24 @@
     // Handle Enter key in setup
     document.getElementById('setup-key').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') saveSetup();
+    });
+
+    // 앱 복귀 시 자동 새로고침 — 모바일은 백그라운드에서 setTimeout(폴링)이 멈춘다.
+    // 화면 끄거나 다른 앱 갔다 돌아오면, 그새 완료된 답변/분석을 자동 반영한다.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      // 답변 대기 중이면 폴링 재개 (낙관적 '답변 생성 중' 버블은 유지)
+      if (chatPending && pendingChatJobId) {
+        pollChat(pendingChatJobId, 0);
+        return;
+      }
+      // 상세 화면이면 최신 대화로 갱신, 목록 화면이면 목록 갱신
+      const detail = document.getElementById('detail-screen');
+      if (currentDetailId && detail && !detail.classList.contains('hidden')) {
+        loadDetail(currentDetailId);
+      } else if (CONFIG.anonKey) {
+        loadSessions();
+      }
     });
 
     // Init
