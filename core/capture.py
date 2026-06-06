@@ -54,7 +54,8 @@ def _is_tradingview_window(title):
     """TradingView 앱 창인지 판별"""
     t = title.lower()
     # TradingView 앱 타이틀 패턴: 'ETHUSDT.P ▲ 2,326.88 +0.47%' 형태
-    if re.search(r'[A-Z]{2,10}USDT', title, re.IGNORECASE):
+    # 숫자 포함 심볼(예: 1000PEPEUSDT)도 인식하도록 [A-Z0-9] 허용
+    if re.search(r'[A-Z0-9]{2,12}USDT', title, re.IGNORECASE):
         return True
     if 'tradingview' in t:
         return True
@@ -68,8 +69,8 @@ def parse_window_title(title):
     symbol = None
     interval_label = None
 
-    # 종목 추출: XXXUSDT 패턴
-    sym_match = re.search(r'([A-Z]{2,10}USDT)(?:\.P)?', title.upper())
+    # 종목 추출: XXXUSDT 패턴 (1000PEPE 등 숫자 포함 심볼도 허용)
+    sym_match = re.search(r'([A-Z0-9]{2,12}USDT)(?:\.P)?', title.upper())
     if sym_match:
         symbol = sym_match.group(1)
 

@@ -887,6 +887,7 @@
     <div class="header">
       <button class="header-btn" onclick="showList()" title="뒤로">←</button>
       <div class="header-title" id="detail-title">세션</div>
+      <button class="header-btn" onclick="reanalyzeRsi()" title="RSI 재분석">🌊</button>
       <button class="header-btn" onclick="refreshDetail()" title="새로고침">🔄</button>
     </div>
     <div class="content" id="detail-content"></div>
@@ -1026,6 +1027,7 @@
     /* ═══════════════════════════════════════════ */
     let chatPending = false;
     let pendingChatJobId = null;   // 백그라운드 복귀 시 폴링 재개용
+    let pendingRsiJobId = null;    // 현재 세션 RSI 재분석 진행 중인 작업
 
     function setChatBusy(busy) {
       chatPending = busy;
@@ -1127,6 +1129,80 @@
         }
       } catch (e) { /* 계속 폴링 */ }
       setTimeout(() => pollChat(jobId, tries + 1), 3000);
+    }
+
+    /* ═══════════════════════════════════════════ */
+    /* 현재 세션 안에서 RSI 재분석 (새 카드 안 만듦)   */
+    /* ═══════════════════════════════════════════ */
+    async function reanalyzeRsi() {
+      if (!currentDetailId) { showToast('세션을 먼저 여세요'); return; }
+      if (pendingRsiJobId) { showToast('이미 RSI 재분석 중...'); return; }
+      const sym = currentDetailSymbol || '';
+      const jobId = 'rsi_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      pendingRsiJobId = jobId;
+
+      // 진행 표시(낙관적) — 완료 시 loadDetail이 실제 리포트로 교체
+      const content = document.getElementById('detail-content');
+      if (content) {
+        content.insertAdjacentHTML('beforeend', `
+          <div class="msg" id="rsi-pending">
+            <div class="msg-header"><div class="msg-avatar ai">🌊</div><div class="msg-role">RSI</div></div>
+            <div class="msg-bubble ai"><span class="typing-dots"><span>●</span><span>●</span><span>●</span></span> RSI 재분석 중...</div>
+          </div>`);
+        content.scrollTop = content.scrollHeight;
+      }
+      showToast('🌊 RSI 재분석 요청됨...');
+      try {
+        const resp = await fetch(`${SUPABASE_URL}/rest/v1/analysis_jobs`, {
+          method: 'POST',
+          headers: { ...apiHeaders(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({
+            id: jobId, job_type: 'rsi_append', session_id: currentDetailId,
+            symbol: sym, status: 'pending',
+            requested_at: new Date().toISOString(), source: 'mobile',
+          }),
+        });
+        if (!resp.ok) {
+          showToast(`요청 실패 (${resp.status})`);
+          pendingRsiJobId = null;
+          const p = document.getElementById('rsi-pending'); if (p) p.remove();
+          return;
+        }
+        if (CONFIG.workerUrl) {
+          fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
+        }
+        pollRsi(jobId, 0);
+      } catch (e) {
+        showToast('오류: ' + e.message);
+        pendingRsiJobId = null;
+      }
+    }
+
+    async function pollRsi(jobId, tries) {
+      if (pendingRsiJobId && jobId !== pendingRsiJobId) return;
+      if (tries > 60) {
+        showToast('⏱ RSI 재분석 지연 — 🔄 새로고침하거나 앱을 다시 열어보세요');
+        pendingRsiJobId = null;
+        return;
+      }
+      try {
+        const url = `${SUPABASE_URL}/rest/v1/analysis_jobs?id=eq.${encodeURIComponent(jobId)}&select=status,error`;
+        const r = await fetch(url, { headers: apiHeaders() });
+        const job = (await r.json())[0];
+        if (job && job.status === 'done') {
+          pendingRsiJobId = null;
+          showToast('✅ RSI 재분석 완료');
+          if (currentDetailId) loadDetail(currentDetailId);  // 새 RSI 리포트가 이어붙은 세션으로 갱신
+          return;
+        }
+        if (job && job.status === 'error') {
+          pendingRsiJobId = null;
+          showToast('⚠️ RSI 오류: ' + (job.error || '알 수 없음'));
+          const p = document.getElementById('rsi-pending'); if (p) p.remove();
+          return;
+        }
+      } catch (e) { /* 계속 폴링 */ }
+      setTimeout(() => pollRsi(jobId, tries + 1), 3000);
     }
 
     /* ═══════════════════════════════════════════ */
@@ -1643,6 +1719,11 @@
       // 답변 대기 중이면 폴링 재개 (낙관적 '답변 생성 중' 버블은 유지)
       if (chatPending && pendingChatJobId) {
         pollChat(pendingChatJobId, 0);
+        return;
+      }
+      // RSI 재분석 대기 중이면 폴링 재개
+      if (pendingRsiJobId) {
+        pollRsi(pendingRsiJobId, 0);
         return;
       }
       // 상세 화면이면 최신 대화로 갱신, 목록 화면이면 목록 갱신

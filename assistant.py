@@ -857,6 +857,28 @@ with col_delete:
             st.session_state.active_tab = None
         st.rerun()
 
+# ── 종목 직접 입력 / 수정 ──
+# 자동인식(TradingView 창)이 안 잡히거나(숫자심볼·비USDT·창 미실행), 다른
+# 종목을 분석하고 싶을 때 수동으로 지정. 입력하면 자동인식이 이를 덮어쓰지
+# 않는다(상단 detect_chart_info는 symbol 이 비어 있을 때만 동작).
+with st.expander("🔧 종목 직접 입력 / 수정 (자동인식이 안 잡힐 때)", expanded=not sess.get("symbol")):
+    msc1, msc2 = st.columns([3, 1])
+    with msc1:
+        _manual_sym = st.text_input(
+            "종목", value=sess.get("symbol", ""),
+            key=f"sym_in_{sess['id']}", label_visibility="collapsed",
+            placeholder="예: ZECUSDT, 1000PEPEUSDT",
+        )
+    with msc2:
+        if st.button("적용", key=f"sym_apply_{sess['id']}", use_container_width=True):
+            _v = (_manual_sym or "").strip().upper()
+            if _v:
+                sess["symbol"] = _v
+                if not sess.get("interval"):
+                    sess["interval"] = "15분"   # 수동 지정 시 데이터 수집 기본 TF 보정
+                _safe_save_session(sess)
+                st.rerun()
+
 
 # 퀵 분석 프롬프트 → 짧은 표시 매핑
 _PROMPT_DISPLAY_MAP = {

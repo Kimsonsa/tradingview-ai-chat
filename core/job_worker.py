@@ -155,8 +155,8 @@ def _finish_job(job_id, session_id=None, error=None):
 # 분석 실행 (데스크탑 RSI 파동 핸들러와 동일 로직)
 # ═══════════════════════════════════════════════
 
-def run_analysis(symbol):
-    """RSI 파동 분석 + (키 있으면) AI 코멘터리 → 'report' 세션 저장. 반환: session_id"""
+def _build_rsi_report(symbol):
+    """RSI 파동 분석 실행 → (본문 텍스트, 차트 HTML) 반환. 신규/이어붙이기 공용."""
     results = analyze_rsi_wave(symbol)
 
     try:
@@ -186,13 +186,37 @@ def run_analysis(symbol):
             ai_text = f"⚠️ AI 분석 오류: {e}"
 
     content = summary + ("\n\n" + ai_text if ai_text else "")
+    return content, combined
 
+
+def run_analysis(symbol):
+    """RSI 파동 분석 + (키 있으면) AI 코멘터리 → 'report' 세션 저장. 반환: session_id"""
+    content, combined = _build_rsi_report(symbol)
     sess = create_session(symbol=symbol)
     sess["status"] = "report"  # 데스크탑 탭 자동복원에서 제외 (모바일 전용 리포트)
     sess["messages"] = [
         {"role": "user", "content": "🌊 RSI 파동 분석 (모바일 요청)"},
         {"role": "assistant", "content": content, "rsi_wave_html": combined},
     ]
+    save_session(sess)
+    return sess["id"]
+
+
+def run_analysis_append(session_id, symbol):
+    """기존 세션에 RSI 파동 분석 결과를 이어붙인다(새 세션 생성 안 함).
+    모바일 상세화면에서 '같은 분석 안에서 RSI 재분석'을 누를 때 사용."""
+    from core.session_manager import load_session
+    sess = load_session(session_id) if session_id else None
+    if not sess:
+        # 세션을 못 찾으면 신규 분석으로 폴백
+        return run_analysis(symbol or "BTCUSDT")
+    sym = (symbol or sess.get("symbol") or "BTCUSDT")
+    if not sess.get("symbol"):
+        sess["symbol"] = sym
+    content, combined = _build_rsi_report(sym)
+    sess.setdefault("messages", [])
+    sess["messages"].append({"role": "user", "content": "🌊 RSI 재분석"})
+    sess["messages"].append({"role": "assistant", "content": content, "rsi_wave_html": combined})
     save_session(sess)
     return sess["id"]
 
@@ -261,6 +285,8 @@ def process_pending_jobs(max_jobs=3):
         try:
             if job_type == "chat":
                 sid = run_chat(session_id, prompt or "", (symbol or "BTCUSDT").upper())
+            elif job_type == "rsi_append":
+                sid = run_analysis_append(session_id, (symbol or "BTCUSDT").upper())
             else:
                 sid = run_analysis((symbol or "BTCUSDT").upper())
             _finish_job(job_id, session_id=sid)
