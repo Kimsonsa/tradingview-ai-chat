@@ -17,9 +17,25 @@ import os
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.job_worker import ensure_jobs_table, process_pending_jobs
+from core.job_worker import ensure_jobs_table, process_pending_jobs, start_worker_thread
 
 app = FastAPI(title="TradeAI Cloud Worker")
+
+
+@app.on_event("startup")
+def _boot_worker():
+    """인스턴스 기동(콜드스타트 포함) 시 백그라운드 폴링 워커를 띄운다.
+
+    무료 플랜은 미사용 시 잠들고, 깨우는 /process 요청은 콜드스타트
+    로딩 페이지에 먹혀 핸들러까지 도달하지 못할 수 있다. 그 경우에도
+    인스턴스가 일단 깨어나면 이 데몬 스레드가 pending 작업을 폴링해
+    처리하므로 폰의 단발성 트리거 유실과 무관하게 분석이 완료된다.
+    (/process 는 '즉시 처리' 가속기로 남는다.)
+    """
+    try:
+        start_worker_thread()
+    except Exception:
+        pass
 
 # 모바일(브라우저)에서 직접 호출하므로 CORS 허용
 app.add_middleware(
