@@ -717,7 +717,25 @@ if st.session_state.viewing_history:
                 st.session_state.viewing_history = None
                 st.rerun()
 
-        _banner_txt = ("📖 읽기 전용 — 모바일에서 요청한 분석 리포트입니다" if is_report
+        # 모바일 분석 리포트 → PC에서 그 맥락 그대로 대화 이어가기
+        # 읽기 전용 세션을 활성 탭으로 승격하면, 아래쪽 채팅 입력/핸들러가
+        # 그대로 동작하여 실시간 데이터 기반으로 대화를 이어가고 Supabase에
+        # 저장한다(모바일과 양방향 동기화).
+        if is_report:
+            if st.button("💬 이 분석으로 대화 이어가기", key="continue_report",
+                         use_container_width=True, type="primary"):
+                # 리포트 세션은 interval 이 비어있을 수 있다. 비어 있으면 채팅 시
+                # 타임프레임 목록이 비어 실시간 데이터 수집이 안 되므로 기본값 보정.
+                if not hist_data.get("interval"):
+                    hist_data["interval"] = "15분"
+                if not hist_data.get("symbol"):
+                    hist_data["symbol"] = "BTCUSDT"
+                st.session_state.tabs[hist_data["id"]] = hist_data
+                st.session_state.active_tab = hist_data["id"]
+                st.session_state.viewing_history = None
+                st.rerun()
+
+        _banner_txt = ("📖 읽기 전용 — '대화 이어가기'를 누르면 이 분석으로 채팅할 수 있어요" if is_report
                        else "📖 읽기 전용 — 과거 거래 기록을 열람 중입니다")
         st.markdown(f'<div class="readonly-banner">{_banner_txt}</div>',
                     unsafe_allow_html=True)
