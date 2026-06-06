@@ -1118,7 +1118,7 @@
         if (job && job.status === 'done') {
           setChatBusy(false);
           pendingChatJobId = null;
-          if (currentDetailId) loadDetail(currentDetailId);  // 실제 대화로 갱신
+          if (currentDetailId) loadDetail(currentDetailId, true);  // 실제 대화로 갱신 + 맨 아래로
           return;
         }
         if (job && job.status === 'error') {
@@ -1192,7 +1192,7 @@
         if (job && job.status === 'done') {
           pendingRsiJobId = null;
           showToast('✅ RSI 재분석 완료');
-          if (currentDetailId) loadDetail(currentDetailId);  // 새 RSI 리포트가 이어붙은 세션으로 갱신
+          if (currentDetailId) loadDetail(currentDetailId, true);  // 새 RSI 리포트로 갱신 + 맨 아래로
           return;
         }
         if (job && job.status === 'error') {
@@ -1420,7 +1420,7 @@
     /* ═══════════════════════════════════════════ */
     /* Session Detail                             */
     /* ═══════════════════════════════════════════ */
-    async function loadDetail(id) {
+    async function loadDetail(id, scrollToBottom = false) {
       const content = document.getElementById('detail-content');
       const titleEl = document.getElementById('detail-title');
 
@@ -1496,6 +1496,14 @@
           }
         } catch (iframeErr) {
           console.warn('RSI wave rendering skipped:', iframeErr);
+        }
+
+        // 채팅 답변/ RSI 재분석 직후엔 최신 내용이 보이도록 맨 아래로.
+        // 지연 로딩 차트 높이까지 반영되도록 두 번(즉시 + 약간 후) 스크롤.
+        if (scrollToBottom) {
+          const toBottom = () => { content.scrollTop = content.scrollHeight; };
+          requestAnimationFrame(toBottom);
+          setTimeout(toBottom, 300);
         }
 
       } catch (e) {
