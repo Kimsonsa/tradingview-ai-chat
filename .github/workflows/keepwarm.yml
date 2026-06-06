@@ -1,0 +1,37 @@
+name: keep-warm
+
+# 무료 Render 인스턴스는 15분 미사용 시 절전(spin down)된다.
+# 그러면 (1) 폰 첫 분석이 콜드스타트로 50~90초 느려지고,
+# (2) 작업 처리 중 인스턴스가 죽으면 폴링 워커가 없어 작업이 멈춘다.
+# 이 워크플로가 주기적으로 /process 를 호출해:
+#   - 인스턴스를 깨워 절전을 막고(콜드스타트 제거)
+#   - 항상 워커가 폴링 상태가 되어 pending/stale 작업을 자동 처리한다.
+# 참고: /process 가 트리거하는 분석은 Render(싱가포르)에서 Binance를
+# 호출하므로, 이 러너의 위치(미국)는 데이터 접근에 영향을 주지 않는다.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 10분마다 (UTC 기준). GitHub 스케줄은 혼잡 시 지연될 수 있음.
+  workflow_dispatch: {}        # Actions 탭에서 수동 실행 가능
+
+# 직전 실행이 남아 있으면 취소하고 최신만 유지
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping worker (wake + process pending jobs)
+        env:
+          WORKER_URL: https://tradingview-ai-chat.onrender.com
+        run: |
+          echo "Pinging $WORKER_URL/process ..."
+          # 콜드스타트로 깨어나는 데 시간이 걸릴 수 있으므로 넉넉한 타임아웃.
+          # 실패해도 워크플로는 성공 처리(다음 주기에 재시도) → "|| true"
+          code=$(curl -m 120 -s -o /dev/null -w "%{http_code}" -X POST "$WORKER_URL/process" || true)
+          echo "/process -> HTTP $code"
+          # 헬스 핑(깨우기 보강)
+          curl -m 60 -s -o /dev/null "$WORKER_URL/" || true
+          echo "done"
