@@ -77,9 +77,12 @@ def _init_table():
                 mfe_pct DOUBLE PRECISION,
                 mae_pct DOUBLE PRECISION,
                 return_pct DOUBLE PRECISION,
-                outcome TEXT
+                outcome TEXT,
+                features TEXT
             )
         """)
+        # 기존 테이블에도 features 컬럼 보장(멱등) — 지표별 귀인(C)·타이밍(B) 데이터
+        c.execute("ALTER TABLE rsi_wave_signals ADD COLUMN IF NOT EXISTS features TEXT")
         conn.commit()
         return True
     except Exception:
@@ -102,6 +105,7 @@ _COLS = [
     "signal_type", "regime", "rsi", "long_score", "short_score", "cvd_bias",
     "oi_quadrant", "funding_pct", "divergences", "horizon_min", "evaluated",
     "evaluated_at", "exit_price", "mfe_pct", "mae_pct", "return_pct", "outcome",
+    "features",
 ]
 
 
@@ -150,9 +154,63 @@ def _active_divs(r):
     return ",".join(x for x in out if x)
 
 
+def _num(x):
+    try:
+        return round(float(x), 4)
+    except Exception:
+        return None
+
+
+def _tf_features(r, cvd_bias):
+    """TF별 지표 상태 벡터 — 지표별 귀인(C)의 입력. 결정에 쓰인 신호들을 남긴다."""
+    return {
+        "regime": r.get("regime"),
+        "rsi": _num(r.get("rsi")),
+        "position": r.get("position"),
+        "confidence": r.get("confidence"),
+        "signal_type": r.get("signal_type"),
+        "long_score": r.get("long_score"),
+        "short_score": r.get("short_score"),
+        "cvd_bias": cvd_bias,
+        "oi_quadrant": (r.get("oi_analysis") or {}).get("quadrant"),
+        "funding_pct": _num((r.get("funding_analysis") or {}).get("funding_pct")),
+        "div_v2": (r.get("div_v2") or {}).get("type"),
+        "cvd_div": (r.get("cvd_div") or {}).get("type"),
+        "obv_div": (r.get("obv_div") or {}).get("type"),
+        "failed_div": bool(r.get("failed_div")),
+        "squeeze": (r.get("squeeze_expansion") or {}).get("type"),
+    }
+
+
+def _build_verdict(results):
+    """분석 단위 추천(진입 시나리오·방향·적합도) — 타이밍 평가(B)의 입력."""
+    try:
+        from core.rsi_wave import build_entry_scenarios, assess_entry
+        es = build_entry_scenarios(results) or {}
+        ea = assess_entry(results) or {}
+        return {
+            "direction": ea.get("direction"),
+            "entry_score": ea.get("entry_score"),
+            "chase_ok": ea.get("chase_ok"),
+            "position_size": ea.get("position_size"),
+            "risk_level": ea.get("risk_level"),
+            "rr": ea.get("rr"),
+            "ref_tf": ea.get("ref_tf"),
+            "levels": ea.get("levels"),
+            "scenarios": [
+                {"entry": s.get("entry"), "stop": s.get("stop"),
+                 "target": s.get("target"), "R": s.get("R"), "grade": s.get("grade")}
+                for s in (es.get("scenarios") or [])
+            ],
+        }
+    except Exception:
+        return {}
+
+
 def _build_rows(symbol, results):
     """analyze_rsi_wave 결과 → 신호 행 리스트 (TF당 1행)"""
     now_iso = datetime.now().isoformat()
+    verdict = _build_verdict(results)   # 분석 단위 추천(모든 행에 동일 첨부)
     rows = []
     for tf, r in results.items():
         if not r or r.get("error"):
@@ -164,6 +222,14 @@ def _build_rows(symbol, results):
 
         oi_an = r.get("oi_analysis") or {}
         fund = r.get("funding_analysis") or {}
+
+        try:
+            features_json = json.dumps(
+                {"tf": _tf_features(r, cvd_bias), "verdict": verdict},
+                ensure_ascii=False,
+            )
+        except Exception:
+            features_json = None
 
         rows.append({
             "id": f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{symbol}_{tf}_{uuid.uuid4().hex[:6]}",
@@ -190,6 +256,7 @@ def _build_rows(symbol, results):
             "mae_pct": None,
             "return_pct": None,
             "outcome": None,
+            "features": features_json,
         })
     return rows
 
