@@ -512,9 +512,25 @@ with st.sidebar:
             btn_label = f"🌊 {sym} {intv}  {time_str}".replace("  ", " ").strip()
             if st.session_state.viewing_history == s["id"]:
                 btn_label = "▸ " + btn_label
-            if st.button(btn_label, key=f"report_{s['id']}", use_container_width=True):
-                st.session_state.viewing_history = s["id"]
-                st.rerun()
+            rp_col1, rp_col2 = st.columns([5, 1])
+            with rp_col1:
+                if st.button(btn_label, key=f"report_{s['id']}", use_container_width=True):
+                    st.session_state.viewing_history = s["id"]
+                    st.rerun()
+            with rp_col2:
+                if st.button("✕", key=f"delreport_{s['id']}"):
+                    delete_session(s["id"])
+                    # 보던 리포트/열어둔 탭이면 함께 정리
+                    if st.session_state.viewing_history == s["id"]:
+                        st.session_state.viewing_history = None
+                    if s["id"] in st.session_state.tabs:
+                        del st.session_state.tabs[s["id"]]
+                        if st.session_state.active_tab == s["id"]:
+                            st.session_state.active_tab = (
+                                list(st.session_state.tabs.keys())[0]
+                                if st.session_state.tabs else None
+                            )
+                    st.rerun()
 
     # ── 거래 히스토리 ──
     closed_history = [s for s in history if s.get("status") == "closed"]

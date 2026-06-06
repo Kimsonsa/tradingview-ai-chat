@@ -448,6 +448,26 @@
       flex-shrink: 0;
       opacity: 0.5;
     }
+    .session-del {
+      flex-shrink: 0;
+      width: 34px;
+      height: 34px;
+      border: none;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    .session-del:active {
+      background: var(--red-bg);
+      color: var(--red);
+    }
 
     /* Empty state */
     .empty-state {
@@ -1297,8 +1317,28 @@
             <div class="session-meta">${escapeHtml(meta)}</div>
           </div>
           ${pnlHtml}
-          <div class="session-arrow">›</div>
+          <button class="session-del" title="삭제" aria-label="삭제"
+                  onclick="event.stopPropagation(); deleteSession('${escapeHtml(s.id)}')">✕</button>
         </div>`;
+    }
+
+    async function deleteSession(id) {
+      const s = (currentSessions || []).find(x => x.id === id);
+      const name = s ? `${s.symbol || ''} ${s.interval || ''}`.trim() : '';
+      if (!confirm(`이 항목을 삭제할까요?${name ? '\n' + name : ''}`)) return;
+      try {
+        const resp = await fetch(
+          `${SUPABASE_URL}/rest/v1/trade_sessions?id=eq.${encodeURIComponent(id)}`,
+          { method: 'DELETE', headers: { ...apiHeaders(), 'Prefer': 'return=minimal' } }
+        );
+        if (!resp.ok) { showToast(`삭제 실패 (${resp.status})`); return; }
+        showToast('🗑️ 삭제됨');
+        // 상세 화면에서 그 세션을 보고 있었다면 목록으로 복귀
+        if (currentDetailId === id) { currentDetailId = null; showList(); }
+        loadSessions();
+      } catch (e) {
+        showToast('삭제 오류: ' + e.message);
+      }
     }
 
     /* ═══════════════════════════════════════════ */
