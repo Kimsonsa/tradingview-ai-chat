@@ -14,6 +14,22 @@ PC 없이도 폰만으로 분석이 가능해진다.
 로컬 실행:  uvicorn cloud_worker:app --host 0.0.0.0 --port 8000
 """
 import os
+import time
+
+# ── 시간대 고정 (KST) ───────────────────────────────────────────────
+# 이 워커는 Render(UTC)에서 돌지만, 데스크탑 앱과 기존 데이터는 모두
+# 한국시간(KST) 기준이다. datetime.now()가 서버 로컬시각을 쓰므로,
+# 고정하지 않으면 클라우드가 만든 세션의 created_at 이 UTC(예 04:57)로
+# 기록돼 데스크탑(KST 13:57)보다 9시간 과거로 정렬 → 폰 목록에서 새
+# 결과가 한참 아래로 파묻힌다. 또 _claim_job 의 stale 재점유 비교도
+# 어긋나 데스크탑·클라우드 동시 가동 시 중복 처리 위험이 생긴다.
+# 프로세스 시간대를 KST로 맞추면 모든 타임스탬프가 데스크탑과 일치한다.
+os.environ.setdefault("TZ", "Asia/Seoul")
+try:
+    time.tzset()  # Unix(Render)에서 TZ 적용. Windows엔 없음(데스크탑은 이미 KST).
+except AttributeError:
+    pass
+
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
