@@ -1,37 +1,44 @@
 name: keep-warm
 
-# 무료 Render 인스턴스는 15분 미사용 시 절전(spin down)된다.
-# 그러면 (1) 폰 첫 분석이 콜드스타트로 50~90초 느려지고,
-# (2) 작업 처리 중 인스턴스가 죽으면 폴링 워커가 없어 작업이 멈춘다.
-# 이 워크플로가 주기적으로 /process 를 호출해:
-#   - 인스턴스를 깨워 절전을 막고(콜드스타트 제거)
-#   - 항상 워커가 폴링 상태가 되어 pending/stale 작업을 자동 처리한다.
-# 참고: /process 가 트리거하는 분석은 Render(싱가포르)에서 Binance를
-# 호출하므로, 이 러너의 위치(미국)는 데이터 접근에 영향을 주지 않는다.
+# 무료 Render 인스턴스는 15분 미사용 시 절전된다. 그러면 밖에서 폰으로
+# 분석할 때 인스턴스가 자고 있어 작업이 처리되지 않는다(폰의 단발 핑은
+# 앱이 백그라운드로 가면 취소돼 못 깨우기도 함).
+#
+# 문제: GitHub Actions 의 cron 스케줄은 무료/공개 저장소에서 매우 불규칙
+# (10분 설정이 실제론 1~4시간 간격, 누락도 잦음). 그래서 단순 스케줄로는
+# 공백이 생긴다.
+#
+# 해결: '스케줄로 자주 깨우기'를 포기하고, '한 번 뜬 실행이 오래 살면서
+# 5분마다 핑'하게 한다. 실행 길이(~5.5h)가 스케줄 간격(3h)보다 길어
+# 실행들이 겹치므로 공백 없이 연속으로 인스턴스를 깨워둔다.
+# (공개 저장소는 Actions 무제한 → 장시간 실행 OK)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # 10분마다 (UTC 기준). GitHub 스케줄은 혼잡 시 지연될 수 있음.
-  workflow_dispatch: {}        # Actions 탭에서 수동 실행 가능
+    - cron: "0 */3 * * *"      # 3시간마다 시도(각 실행이 길게 돌아 겹침)
+  workflow_dispatch: {}          # 수동 즉시 시작
 
-# 직전 실행이 남아 있으면 취소하고 최신만 유지
+# 겹쳐 돌아도 유지(취소하지 않음) → 연속 커버리지
 concurrency:
   group: keep-warm
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 350         # ~5.8h (잡 최대 6h)
     steps:
-      - name: Ping worker (wake + process pending jobs)
+      - name: Keep instance warm (long-running ping loop)
         env:
           WORKER_URL: https://tradingview-ai-chat.onrender.com
         run: |
-          echo "Pinging $WORKER_URL/process ..."
-          # 콜드스타트로 깨어나는 데 시간이 걸릴 수 있으므로 넉넉한 타임아웃.
-          # 실패해도 워크플로는 성공 처리(다음 주기에 재시도) → "|| true"
-          code=$(curl -m 120 -s -o /dev/null -w "%{http_code}" -X POST "$WORKER_URL/process" || true)
-          echo "/process -> HTTP $code"
-          # 헬스 핑(깨우기 보강)
-          curl -m 60 -s -o /dev/null "$WORKER_URL/" || true
-          echo "done"
+          END=$((SECONDS + 19800))   # 약 5.5시간 동안 루프
+          i=0
+          while [ $SECONDS -lt $END ]; do
+            i=$((i+1))
+            # /process: 깨우기 + 대기/멈춘 작업 처리. 콜드스타트 대비 긴 타임아웃.
+            code=$(curl -m 120 -s -o /dev/null -w "%{http_code}" -X POST "$WORKER_URL/process" || echo "ERR")
+            echo "[$i] $(date -u +%H:%M:%S) /process -> $code"
+            sleep 300                # 5분 간격
+          done
+          echo "loop finished"

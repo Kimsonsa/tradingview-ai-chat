@@ -1028,10 +1028,21 @@
       }
     }
 
+    // 클라우드 워커 깨우기/처리 트리거. 폴링 중 주기적으로 재호출해야
+    // 잠든 인스턴스가 콜드스타트로 깨어난 뒤 핸들러까지 도달해 처리된다.
+    // (단발 핑은 앱 백그라운드 시 취소되거나 콜드스타트 페이지에 먹힐 수 있음)
+    function pingProcess() {
+      if (CONFIG.workerUrl) {
+        fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
+      }
+    }
+
+    const POLL_MAX = 100;   // 약 5분 (콜드스타트가 길어도 버티게)
+
     async function pollJob(id, tries) {
-      if (tries > 60) {
+      if (tries > POLL_MAX) {
         showToast(CONFIG.workerUrl
-          ? '⏱ 시간 초과 — 클라우드 서버 상태를 확인하세요'
+          ? '⏱ 시간 초과 — 잠시 후 다시 시도해 주세요(서버 절전에서 깨어나는 중일 수 있어요)'
           : '⏱ 시간 초과 — 데스크탑 앱이 켜져 있는지 확인하세요');
         return;
       }
@@ -1051,6 +1062,7 @@
           return;
         }
       } catch (e) { /* 네트워크 일시 오류 — 계속 폴링 */ }
+      if (tries % 5 === 0) pingProcess();   // ~15초마다 깨우기 재시도
       setTimeout(() => pollJob(id, tries + 1), 3000);
     }
 
@@ -1135,7 +1147,7 @@
     async function pollChat(jobId, tries) {
       // 복귀 후 재개로 같은 작업에 대해 폴링이 중복 시작되면 최신 것만 유지
       if (pendingChatJobId && jobId !== pendingChatJobId) return;
-      if (tries > 60) {
+      if (tries > POLL_MAX) {
         // 시간 초과여도 답변은 서버에 저장됐을 수 있음 → 안내 후 한 번 갱신 시도
         setPendingText('⏱ 응답이 늦어요 — 잠시 후 🔄 새로고침하거나 앱을 다시 열어보세요'
           + (CONFIG.workerUrl ? ' (서버 절전에서 깨어나는 중일 수 있어요)' : ' (데스크탑 앱 확인)'));
@@ -1160,6 +1172,7 @@
           return;
         }
       } catch (e) { /* 계속 폴링 */ }
+      if (tries % 5 === 0) pingProcess();   // ~15초마다 깨우기 재시도
       setTimeout(() => pollChat(jobId, tries + 1), 3000);
     }
 
@@ -1212,7 +1225,7 @@
 
     async function pollRsi(jobId, tries) {
       if (pendingRsiJobId && jobId !== pendingRsiJobId) return;
-      if (tries > 60) {
+      if (tries > POLL_MAX) {
         showToast('⏱ RSI 재분석 지연 — 🔄 새로고침하거나 앱을 다시 열어보세요');
         pendingRsiJobId = null;
         return;
@@ -1234,6 +1247,7 @@
           return;
         }
       } catch (e) { /* 계속 폴링 */ }
+      if (tries % 5 === 0) pingProcess();   // ~15초마다 깨우기 재시도
       setTimeout(() => pollRsi(jobId, tries + 1), 3000);
     }
 
