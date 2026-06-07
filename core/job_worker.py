@@ -155,8 +155,12 @@ def _finish_job(job_id, session_id=None, error=None):
 # 분석 실행 (데스크탑 RSI 파동 핸들러와 동일 로직)
 # ═══════════════════════════════════════════════
 
-def _build_rsi_report(symbol):
-    """RSI 파동 분석 실행 → (본문 텍스트, 차트 HTML) 반환. 신규/이어붙이기 공용."""
+def _build_rsi_report(symbol, history=None):
+    """RSI 파동 분석 실행 → (본문 텍스트, 차트 HTML) 반환. 신규/이어붙이기 공용.
+
+    history: 이 방의 이전 대화 메시지 리스트. 주어지면 AI 코멘터리가 그 맥락을
+    인지한 채 분석한다(예: "앞서 숏을 논의 중"). PC RSI 버튼과 동일하게 동작.
+    방향 판정 자체는 RSI_WAVE_SYSTEM_PROMPT가 데이터 기준으로 객관 유지."""
     results = analyze_rsi_wave(symbol)
 
     try:
@@ -177,9 +181,15 @@ def _build_rsi_report(symbol):
     if api_key:
         try:
             prompt = format_rsi_wave_for_ai(symbol, results)
+            # 대화 맥락이 있으면 이전 메시지 + RSI 데이터 프롬프트로 구성(PC와 동일).
+            # 없으면(신규 분석) 백지에서.
+            if history:
+                ai_messages = list(history) + [{"role": "user", "content": prompt}]
+            else:
+                ai_messages = [{"role": "user", "content": prompt}]
             ai_text = "".join(analyze_chart(
                 api_key=api_key, model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=ai_messages,
                 system_prompt_override=RSI_WAVE_SYSTEM_PROMPT,
             ))
         except Exception as e:
@@ -213,7 +223,8 @@ def run_analysis_append(session_id, symbol):
     sym = (symbol or sess.get("symbol") or "BTCUSDT")
     if not sess.get("symbol"):
         sess["symbol"] = sym
-    content, combined = _build_rsi_report(sym)
+    # 이 방의 이전 대화를 맥락으로 전달 → RSI 코멘터리가 흐름을 이어받는다
+    content, combined = _build_rsi_report(sym, history=sess.get("messages") or [])
     sess.setdefault("messages", [])
     sess["messages"].append({"role": "user", "content": "🌊 RSI 재분석"})
     sess["messages"].append({"role": "assistant", "content": content, "rsi_wave_html": combined})
