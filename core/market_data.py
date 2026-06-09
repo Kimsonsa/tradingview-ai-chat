@@ -59,6 +59,11 @@ def parse_requested_timeframes(user_message, current_interval="15분"):
     tf_order = ["1분", "3분", "5분", "15분", "30분", "1시간", "2시간", "4시간", "1일", "1주", "1개월"]
     result = [tf for tf in tf_order if tf in found]
 
+    # 현재 TF가 미감지("")이거나 지원 외 값(45분·3시간 등)이고 메시지에도
+    # TF 언급이 없으면 빈 리스트가 됨 → 기본 15분으로 보정
+    if not result:
+        result = ["15분"]
+
     return result
 
 
@@ -592,6 +597,10 @@ def get_multi_timeframe_context(symbol="BTCUSDT", intervals=None, primary_interv
     """
     if intervals is None:
         intervals = [primary_interval]
+    # 빈 리스트/지원 외 TF만 들어온 경우 방어 — ThreadPoolExecutor(max_workers=0) 방지
+    intervals = [tf for tf in intervals if INTERVAL_MAP.get(tf)]
+    if not intervals:
+        intervals = [primary_interval] if INTERVAL_MAP.get(primary_interval) else ["15분"]
 
     # TF별 수집은 네트워크 대기가 대부분 → 병렬로 가장 느린 요청 1개 수준으로 단축
     if len(intervals) == 1:
