@@ -5,15 +5,16 @@ ChatGPT 스타일 사이드바: 새 대화 / 대화 목록 / 설정
 import streamlit as st
 import streamlit.components.v1 as components
 import json
-import copy
 from datetime import datetime
 from core.capture import capture_tradingview, image_to_base64, parse_window_title, detect_chart_info
 from core.market_data import get_market_context, get_multi_timeframe_context, parse_requested_timeframes
-from core.ai_client import analyze_chart, analyze_trade_summary
+from core.ai_client import analyze_chart, analyze_trade_summary, is_claude_model, CLAUDE_MODELS
 from core.rsi_wave import (
-    analyze_rsi_wave, generate_wave_svg, generate_price_ladder_svg, generate_tf_cards,
-    generate_summary_text, format_rsi_wave_for_ai,
+    analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
     RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
+)
+from core.rsi_render import (
+    generate_wave_svg, generate_price_ladder_svg, generate_tf_cards,
 )
 from core.session_manager import (
     create_session, save_session, load_session, delete_session, list_sessions,
@@ -352,8 +353,32 @@ _config = load_config()
 # ─── 세션 상태 초기화 ───
 if "api_key" not in st.session_state:
     st.session_state.api_key = _config.get("api_key", "")
+if "claude_api_key" not in st.session_state:
+    st.session_state.claude_api_key = _config.get("claude_api_key", "")
 if "model" not in st.session_state:
     st.session_state.model = _config.get("model", "gpt-5.5")
+
+
+def _persist_config():
+    """현재 설정 전체를 로컬 설정파일에 저장"""
+    save_config({
+        "api_key": st.session_state.api_key,
+        "claude_api_key": st.session_state.claude_api_key,
+        "model": st.session_state.model,
+    })
+
+
+def _active_api_key():
+    """선택된 모델의 프로바이더(OpenAI/Claude)에 맞는 API 키 반환"""
+    if is_claude_model(st.session_state.model):
+        return st.session_state.claude_api_key
+    return st.session_state.api_key
+
+
+def _key_warning():
+    """현재 모델 프로바이더에 맞는 키 입력 안내 메시지"""
+    provider = "Claude(Anthropic)" if is_claude_model(st.session_state.model) else "OpenAI"
+    return f"🔑 사이드바 설정에서 {provider} API 키를 먼저 입력하세요."
 if "auto_capture" not in st.session_state:
     st.session_state.auto_capture = False
 if "pending_captures" not in st.session_state:
@@ -367,12 +392,19 @@ if "active_tab" not in st.session_state:
 if "viewing_history" not in st.session_state:
     st.session_state.viewing_history = None  # 히스토리 열람 중인 session_id
 
+# Streamlit은 클릭마다 전체 rerun → 매번 DB 풀스캔하지 않도록 목록을 짧게 캐시.
+# 저장/삭제 시 _safe_save_session/_delete_session 이 즉시 무효화한다.
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_list_sessions():
+    return list_sessions()
+
+
 # 시작 시 탭이 없으면 → 기존 active 세션 복원 시도, 없으면 새로 생성
 if not st.session_state.tabs and st.session_state.viewing_history is None:
     # DB/로컬에서 active 상태 세션 복원
     _restored = False
     try:
-        all_sessions = list_sessions()
+        all_sessions = _cached_list_sessions()
         for s_info in all_sessions:
             if s_info.get("status") == "active" and s_info.get("msg_count", 0) > 0:
                 full_sess = load_session(s_info["id"])
@@ -398,23 +430,16 @@ if not st.session_state.tabs and st.session_state.viewing_history is None:
         st.session_state.active_tab = new_sess["id"]
 
 
-def _deep_clean(obj):
-    """재귀적으로 JSON 직렬화 불가능한 객체 제거 (PIL Image 등)"""
-    if obj is None or isinstance(obj, (bool, int, float)):
-        return obj
-    if isinstance(obj, str):
-        return obj
-    if isinstance(obj, dict):
-        return {str(k): _deep_clean(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_deep_clean(v) for v in obj]
-    # PIL Image, bytes, 기타 → None
-    return None
-
-
 def _safe_save_session(session):
-    """세션을 안전하게 저장 (Supabase + 로컬)"""
+    """세션을 안전하게 저장 (Supabase + 로컬) + 목록 캐시 무효화"""
     save_session(session)
+    _cached_list_sessions.clear()
+
+
+def _delete_session(session_id):
+    """세션 삭제 (Supabase + 로컬) + 목록 캐시 무효화"""
+    delete_session(session_id)
+    _cached_list_sessions.clear()
 
 
 def _get_active_session():
@@ -451,6 +476,42 @@ def _format_time(iso_str):
             return dt.strftime("%Y/%m/%d %H:%M")
     except Exception:
         return ""
+
+
+def _close_position(sess):
+    """포지션 종료 — 대화가 있으면 AI 요약 후 closed 저장, 없으면 탭만 닫기.
+    (상단/하단 종료 버튼 공용 핸들러)"""
+    if sess.get("messages"):
+        with st.spinner("🤖 거래 분석 중..."):
+            try:
+                summary = analyze_trade_summary(
+                    api_key=_active_api_key(),
+                    model=st.session_state.model,
+                    messages=sess["messages"],
+                )
+            except Exception as e:
+                summary = {
+                    "symbol": sess.get("symbol", "UNKNOWN"),
+                    "direction": "UNKNOWN", "result": "미확정",
+                    "entry_price": None, "exit_price": None, "pnl_percent": None,
+                    "actions": [], "title": "분석 실패", "note": str(e),
+                }
+
+        # 세션 종료 처리
+        sess["status"] = "closed"
+        sess["closed_at"] = datetime.now().isoformat()
+        sess["summary"] = summary
+        if summary.get("symbol") and summary["symbol"] != "UNKNOWN":
+            sess["symbol"] = summary["symbol"]
+        _safe_save_session(sess)
+
+    # 탭에서 제거 (대화 없이 종료 → 그냥 탭 닫기)
+    tab_id = sess["id"]
+    del st.session_state.tabs[tab_id]
+    st.session_state.active_tab = (
+        list(st.session_state.tabs.keys())[0] if st.session_state.tabs else None
+    )
+    st.rerun()
 
 
 # ═══════════════════════════════════════════════
@@ -491,7 +552,7 @@ with st.sidebar:
                     st.rerun()
             with sb_col2:
                 if st.button("✕", key=f"del_{tab_id}"):
-                    delete_session(tab_id)
+                    _delete_session(tab_id)
                     del st.session_state.tabs[tab_id]
                     if st.session_state.active_tab == tab_id:
                         if st.session_state.tabs:
@@ -501,7 +562,7 @@ with st.sidebar:
                     st.rerun()
 
     # ── 모바일 분석 리포트 (읽기 전용 — 탭 복원 안 함) ──
-    history = list_sessions()
+    history = _cached_list_sessions()
     report_history = [s for s in history if s.get("status") == "report"]
     if report_history:
         st.markdown('<div class="history-label">🌊 분석 리포트 (모바일)</div>', unsafe_allow_html=True)
@@ -519,7 +580,7 @@ with st.sidebar:
                     st.rerun()
             with rp_col2:
                 if st.button("✕", key=f"delreport_{s['id']}"):
-                    delete_session(s["id"])
+                    _delete_session(s["id"])
                     # 보던 리포트/열어둔 탭이면 함께 정리
                     if st.session_state.viewing_history == s["id"]:
                         st.session_state.viewing_history = None
@@ -582,14 +643,21 @@ with st.sidebar:
                                 value=st.session_state.api_key, placeholder="sk-...")
         if api_key != st.session_state.api_key:
             st.session_state.api_key = api_key
-            save_config({"api_key": api_key, "model": st.session_state.model})
+            _persist_config()
 
-        MODELS = ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+        claude_key = st.text_input("Claude(Anthropic) API 키", type="password",
+                                   value=st.session_state.claude_api_key,
+                                   placeholder="sk-ant-...")
+        if claude_key != st.session_state.claude_api_key:
+            st.session_state.claude_api_key = claude_key
+            _persist_config()
+
+        MODELS = ["gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"] + CLAUDE_MODELS
         model = st.selectbox("AI 모델", MODELS,
                              index=MODELS.index(st.session_state.model) if st.session_state.model in MODELS else 0)
         if model != st.session_state.model:
             st.session_state.model = model
-            save_config({"api_key": st.session_state.api_key, "model": model})
+            _persist_config()
 
     # ── 신호 정확도 통계 (RSI 파동 가중치 검증) ──
     with st.expander("📈 신호 통계", expanded=False):
@@ -624,11 +692,16 @@ with st.sidebar:
             if ov.get("n"):
                 wr = ov.get("win_rate")
                 ar = ov.get("avg_return")
+                wr_net = ov.get("win_rate_net")
+                ar_net = ov.get("avg_return_net")
                 st.markdown(
                     f"- 전체 적중률: **{wr if wr is not None else '-'}%** "
                     f"(n={ov['n']})\n"
                     f"- 평균 실현수익: **{ar if ar is not None else '-'}%** "
-                    f"(MFE {ov.get('avg_mfe')}% / MAE {ov.get('avg_mae')}%)"
+                    f"(MFE {ov.get('avg_mfe')}% / MAE {ov.get('avg_mae')}%)\n"
+                    f"- 수수료 차감 후: 적중률 **{wr_net if wr_net is not None else '-'}%** · "
+                    f"평균 **{ar_net if ar_net is not None else '-'}%** "
+                    f"(왕복 비용 0.1% 가정)"
                 )
 
                 _MIN_N = 20  # 이 미만은 표본부족 → 신뢰하지 말 것
@@ -778,7 +851,7 @@ if st.session_state.viewing_history:
                 st.caption(note)
         with col2:
             if st.button("🗑️ 삭제", key="delete_hist"):
-                delete_session(st.session_state.viewing_history)
+                _delete_session(st.session_state.viewing_history)
                 st.session_state.viewing_history = None
                 st.rerun()
             if st.button("← 돌아가기", key="back_hist"):
@@ -852,56 +925,13 @@ with col_title:
 with col_close:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("📤 포지션 종료", key="close_position", use_container_width=True):
-        if sess.get("messages"):
-            with st.spinner("🤖 거래 분석 중..."):
-                try:
-                    summary = analyze_trade_summary(
-                        api_key=st.session_state.api_key,
-                        model=st.session_state.model,
-                        messages=sess["messages"],
-                    )
-                except Exception as e:
-                    summary = {
-                        "symbol": sess.get("symbol", "UNKNOWN"),
-                        "direction": "UNKNOWN", "result": "미확정",
-                        "entry_price": None, "exit_price": None, "pnl_percent": None,
-                        "actions": [], "title": "분석 실패", "note": str(e),
-                    }
-
-            # 세션 종료 처리
-            sess["status"] = "closed"
-            sess["closed_at"] = datetime.now().isoformat()
-            sess["summary"] = summary
-            if summary.get("symbol") and summary["symbol"] != "UNKNOWN":
-                sess["symbol"] = summary["symbol"]
-            _safe_save_session(sess)
-
-            # 탭에서 제거
-            tab_id = sess["id"]
-            del st.session_state.tabs[tab_id]
-
-            # 다른 탭이 있으면 그쪽으로, 없으면 새 세션
-            if st.session_state.tabs:
-                st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
-            else:
-                st.session_state.active_tab = None
-
-            st.rerun()
-        else:
-            # 대화 없이 종료 → 그냥 탭 닫기
-            tab_id = sess["id"]
-            del st.session_state.tabs[tab_id]
-            if st.session_state.tabs:
-                st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
-            else:
-                st.session_state.active_tab = None
-            st.rerun()
+        _close_position(sess)
 
 with col_delete:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🗑 삭제", key="delete_current", use_container_width=True):
         tab_id = sess["id"]
-        delete_session(tab_id)
+        _delete_session(tab_id)
         del st.session_state.tabs[tab_id]
         if st.session_state.tabs:
             st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
@@ -1034,48 +1064,7 @@ with cols[2]:
 # ── 하단 포지션 종료 버튼 ──
 st.markdown('<div class="close-position-btn">', unsafe_allow_html=True)
 if st.button("📤 포지션 종료", key="close_position_bottom", use_container_width=True):
-    if sess.get("messages"):
-        with st.spinner("🤖 거래 분석 중..."):
-            try:
-                summary = analyze_trade_summary(
-                    api_key=st.session_state.api_key,
-                    model=st.session_state.model,
-                    messages=sess["messages"],
-                )
-            except Exception as e:
-                summary = {
-                    "symbol": sess.get("symbol", "UNKNOWN"),
-                    "direction": "UNKNOWN", "result": "미확정",
-                    "entry_price": None, "exit_price": None, "pnl_percent": None,
-                    "actions": [], "title": "분석 실패", "note": str(e),
-                }
-
-        # 세션 종료 처리
-        sess["status"] = "closed"
-        sess["closed_at"] = datetime.now().isoformat()
-        sess["summary"] = summary
-        if summary.get("symbol") and summary["symbol"] != "UNKNOWN":
-            sess["symbol"] = summary["symbol"]
-        _safe_save_session(sess)
-
-        # 탭에서 제거
-        tab_id = sess["id"]
-        del st.session_state.tabs[tab_id]
-
-        if st.session_state.tabs:
-            st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
-        else:
-            st.session_state.active_tab = None
-
-        st.rerun()
-    else:
-        tab_id = sess["id"]
-        del st.session_state.tabs[tab_id]
-        if st.session_state.tabs:
-            st.session_state.active_tab = list(st.session_state.tabs.keys())[0]
-        else:
-            st.session_state.active_tab = None
-        st.rerun()
+    _close_position(sess)
 st.markdown('</div>', unsafe_allow_html=True)
 
 # Pending 메시지 처리
@@ -1085,7 +1074,7 @@ force_multi = st.session_state.pop("_pending_force_multi", False)
 pending_rsi_wave = st.session_state.pop("_pending_rsi_wave", False)
 
 # ── 🌊 RSI 파동 분석 처리 ──
-if pending_rsi_wave and st.session_state.api_key:
+if pending_rsi_wave and _active_api_key():
     symbol = sess.get("symbol", "BTCUSDT")
 
     # 사용자 메시지 추가
@@ -1140,7 +1129,7 @@ if pending_rsi_wave and st.session_state.api_key:
 
             ai_response = st.write_stream(
                 analyze_chart(
-                    api_key=st.session_state.api_key,
+                    api_key=_active_api_key(),
                     model=st.session_state.model,
                     messages=ai_messages,
                     system_prompt_override=RSI_WAVE_SYSTEM_PROMPT,
@@ -1160,8 +1149,8 @@ if pending_rsi_wave and st.session_state.api_key:
     _safe_save_session(sess)
     st.rerun()
 
-elif pending_rsi_wave and not st.session_state.api_key:
-    st.warning("🔑 사이드바 설정에서 OpenAI API 키를 먼저 입력하세요.")
+elif pending_rsi_wave and not _active_api_key():
+    st.warning(_key_warning())
 
 # ── 채팅 입력 (자동 캡쳐 체크박스 + 입력) ──
 st.session_state.auto_capture = st.checkbox(
@@ -1171,8 +1160,8 @@ user_input = st.chat_input("차트에 대해 질문하세요...")
 prompt = pending or user_input
 
 if prompt:
-    if not st.session_state.api_key:
-        st.warning("🔑 사이드바 설정에서 OpenAI API 키를 먼저 입력하세요.")
+    if not _active_api_key():
+        st.warning(_key_warning())
     else:
         # 이미지 수집: pending_captures 우선, 자동캡쳐 체크 시 캡쳐, 아니면 이미지 없이 진행
         all_images = []  # [(img, b64, label), ...]
@@ -1258,7 +1247,7 @@ if prompt:
             try:
                 response = st.write_stream(
                     analyze_chart(
-                        api_key=st.session_state.api_key,
+                        api_key=_active_api_key(),
                         model=st.session_state.model,
                         messages=sess["messages"],
                         image_base64=primary_b64,

@@ -3,6 +3,7 @@ Binance Futures 실시간 데이터 + 기술적 지표 계산
 """
 import requests
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 
@@ -67,21 +68,34 @@ _KLINE_ENDPOINTS = [
     "https://fapi.binance.com/fapi/v1/klines",          # 0: 선물 (로컬/비미국)
     "https://data-api.binance.vision/api/v3/klines",    # 1: 스팟 미러 (US 클라우드 등 차단 우회)
 ]
+# 엔드포인트별 limit 상한 — 선물 1500, 스팟 1000 (초과 요청은 400 에러)
+_KLINE_MAX_LIMIT = [1500, 1000]
 _kline_pref = {"idx": 0}  # 한 번 성공한 엔드포인트를 이후에도 우선 사용
 
+# EMA200 워밍업 기본 캔들 수 — 210봉이면 EMA 시드(첫 종가)의 잔존 영향이 ~12%라
+# TradingView 값과 어긋난다. 500봉이면 잔존 영향 < 1%.
+KLINE_WARMUP = 500
 
-def fetch_klines(symbol="BTCUSDT", interval="1h", limit=210):
+
+def kline_source_label():
+    """현재 사용 중인 캔들 데이터 출처 라벨 (AI 컨텍스트 표기용)"""
+    return "Binance Futures" if _kline_pref["idx"] == 0 else "Binance Spot(미러·선물 차단 폴백)"
+
+
+def fetch_klines(symbol="BTCUSDT", interval="1h", limit=KLINE_WARMUP):
     """Binance 캔들 데이터 가져오기.
 
     선물 API(fapi)가 지역차단(451)되는 환경(미국 Streamlit Cloud 등)에서는
     차단되지 않는 공개 스팟 미러(data-api.binance.vision)로 자동 폴백한다.
     두 엔드포인트의 kline 배열 포맷이 동일하므로 파싱 로직은 공통.
+    limit은 엔드포인트별 상한(선물 1500 / 스팟 1000)으로 자동 클램프된다.
     """
     # 이전에 성공한 엔드포인트를 먼저 시도 → 실패 시 나머지
     order = [_kline_pref["idx"], 1 - _kline_pref["idx"]]
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
     last_err = None
     for i in order:
+        params = {"symbol": symbol, "interval": interval,
+                  "limit": min(limit, _KLINE_MAX_LIMIT[i])}
         try:
             res = requests.get(_KLINE_ENDPOINTS[i], params=params, timeout=10)
             res.raise_for_status()
@@ -192,8 +206,9 @@ def calc_macd(closes, fast=12, slow=26, signal=9):
     ema_fast = calc_ema(closes, fast)
     ema_slow = calc_ema(closes, slow)
     macd_line = [f - s for f, s in zip(ema_fast, ema_slow)]
+    # signal_line[i] 는 macd_line[slow-1+i] 시점의 값 — 같은 시점끼리 빼야 함
     signal_line = calc_ema(macd_line[slow-1:], signal)
-    histogram = [m - s for m, s in zip(macd_line[slow-1+signal-1:], signal_line)]
+    histogram = [m - s for m, s in zip(macd_line[slow-1:], signal_line)]
     return macd_line[-1], signal_line[-1], histogram[-1] if histogram else 0
 
 
@@ -423,13 +438,24 @@ def calc_fibonacci(candles, lookback=50):
 
 
 def get_market_context(symbol="BTCUSDT", interval_label="1시간"):
-    """종합 시장 데이터 컨텍스트 문자열 반환"""
-    bi = INTERVAL_MAP.get(interval_label, "1h")
+    """단일 TF 시장 데이터 컨텍스트 — 멀티 TF 빌더의 단일 케이스 위임"""
+    return get_multi_timeframe_context(symbol, [interval_label], interval_label)
+
+
+def _build_tf_section(symbol, label, primary_interval):
+    """단일 TF의 데이터 수집 + 지표 계산 → AI 컨텍스트 섹션 문자열.
+
+    get_market_context / get_multi_timeframe_context 공용 빌더.
+    반환: 섹션 문자열 (알 수 없는 TF면 None, 수집 실패 시 실패 안내 문자열)
+    """
+    bi = INTERVAL_MAP.get(label)
+    if not bi:
+        return None
 
     try:
-        candles = fetch_klines(symbol, bi, 210)
+        candles = fetch_klines(symbol, bi, KLINE_WARMUP)
     except Exception as e:
-        return f"⚠️ 데이터 수집 실패: {e}"
+        return f"📊 {label} — ⚠️ 데이터 수집 실패: {e}"
 
     closes = [c["close"] for c in candles]
     volumes = [c["volume"] for c in candles]
@@ -447,69 +473,65 @@ def get_market_context(symbol="BTCUSDT", interval_label="1시간"):
 
     # Stochastic RSI
     stoch_k, stoch_d = calc_stoch_rsi(closes)
-    stoch_str = f"%K={stoch_k} | %D={stoch_d}" if stoch_k is not None else "데이터 부족"
+    stoch_str = f"%K={stoch_k} | %D={stoch_d}" if stoch_k is not None else "N/A"
     if stoch_k is not None:
         if stoch_k > 80:
             stoch_str += " ⚠️과매수"
         elif stoch_k < 20:
             stoch_str += " ⚠️과매도"
-        if stoch_k is not None and stoch_d is not None:
-            if stoch_k > stoch_d:
-                stoch_str += " (상승 크로스)"
-            else:
-                stoch_str += " (하락 크로스)"
+        if stoch_d is not None:
+            stoch_str += " (↑)" if stoch_k > stoch_d else " (↓)"
 
     # MACD
     macd, macd_sig, macd_hist = calc_macd(closes)
 
     # 볼린저밴드
     bb_upper, bb_mid, bb_lower, bb_bw = calc_bollinger(closes)
-    bb_squeeze = ""
+    bb_extra = ""
     if bb_bw is not None:
         if bb_bw < 3:
-            bb_squeeze = " 🔴스퀴즈(극단적 수축→폭발 임박)"
+            bb_extra = f" 밴드폭={bb_bw}% 🔴스퀴즈"
         elif bb_bw < 5:
-            bb_squeeze = " 🟡수축 중"
+            bb_extra = f" 밴드폭={bb_bw}% 🟡수축"
         elif bb_bw > 10:
-            bb_squeeze = " 🟢확장(변동성 높음)"
+            bb_extra = f" 밴드폭={bb_bw}% 🟢확장"
+        else:
+            bb_extra = f" 밴드폭={bb_bw}%"
 
     # ATR
     atr = calc_atr(candles)
-    atr_str = f"{atr}" if atr is not None else "데이터 부족"
-    if atr is not None:
-        atr_pct = round(atr / cur * 100, 2)
-        atr_str += f" ({atr_pct}%)"
+    atr_str = f"{atr} ({round(atr/cur*100, 2)}%)" if atr else "N/A"
 
     # ADX
     adx, plus_di, minus_di = calc_adx(candles)
-    adx_str = "데이터 부족"
+    adx_str = "N/A"
     if adx is not None:
         if adx >= 40:
-            strength = "매우 강한 추세 🔥"
+            strength = "🔥강추세"
         elif adx >= 25:
-            strength = "추세 진행 중 📈"
+            strength = "📈추세"
         elif adx >= 20:
-            strength = "약한 추세"
+            strength = "약추세"
         else:
-            strength = "횡보/추세 없음 ↔"
-        di_direction = "상승 우세 ↑" if plus_di > minus_di else "하락 우세 ↓"
-        adx_str = f"ADX={adx} ({strength}) | +DI={plus_di} | -DI={minus_di} → {di_direction}"
+            strength = "↔횡보"
+        di_dir = "↑" if plus_di > minus_di else "↓"
+        adx_str = f"{adx}({strength}) +DI={plus_di} -DI={minus_di}{di_dir}"
 
     # OBV
     obv, obv_ema = calc_obv(candles)
-    obv_str = "데이터 부족"
+    obv_str = "N/A"
     if obv is not None:
-        obv_trend = "매집 신호 ↑" if obv > obv_ema else "분산 신호 ↓"
-        obv_str = f"OBV={obv:,.0f} | EMA={obv_ema:,.0f} → {obv_trend}"
+        obv_str = f"{'매집↑' if obv > obv_ema else '분산↓'}"
+
+    # CVD (시장가 매수/매도 체결)
+    cvd, cvd_ema = calc_cvd(candles)
+    cvd_str = "N/A"
+    if cvd is not None:
+        cvd_str = f"{'매수우위↑' if cvd > cvd_ema else '매도우위↓'} (현재봉 델타 {last['delta']:+.0f})"
 
     # VWAP
     vwap = calc_vwap(candles)
-    vwap_str = "데이터 부족"
-    if vwap is not None:
-        vwap_pos = "현재가 VWAP 위 (매수 우위)" if cur > vwap else "현재가 VWAP 아래 (매도 우위)"
-        vwap_str = f"{vwap:.1f} → {vwap_pos}"
-
-
+    vwap_str = f"{vwap:.1f} ({'위' if cur > vwap else '아래'})" if vwap else "N/A"
 
     # 거래량
     avg_vol5 = np.mean(volumes[-6:-1]) if len(volumes) >= 6 else volumes[-1]
@@ -520,7 +542,7 @@ def get_market_context(symbol="BTCUSDT", interval_label="1시간"):
     high20 = max(c["high"] for c in recent20)
     low20 = min(c["low"] for c in recent20)
 
-    # EMA 배열
+    # 추세 판단
     if cur > e20 > e50 > e200:
         trend = "강한 상승 정배열 ↑"
     elif cur > e20 > e50:
@@ -540,32 +562,21 @@ def get_market_context(symbol="BTCUSDT", interval_label="1시간"):
         for c in recent5
     )
 
-    return f"""📊 실시간 데이터 ({symbol} {interval_label}, Binance Futures)
+    is_primary = "(📸 차트 캡쳐 중)" if label == primary_interval else ""
+
+    return f"""📊 [{label}] 실시간 데이터 {is_primary} ({symbol}, {kline_source_label()})
 ━━━━━━━━━━━━━━━━━━━━━━━
-현재가: {cur:.1f} USDT
-20봉 고가: {high20:.1f} | 저가: {low20:.1f}
-
-📈 EMA: 20={e20:.1f} | 50={e50:.1f} | 200={e200:.1f}
-배열: {trend}
-현재가 위치: {'EMA20 위' if cur > e20 else 'EMA20 아래'}
-
-📉 RSI(14): {cur_rsi} {'⚠️과매수' if cur_rsi > 70 else '⚠️과매도' if cur_rsi < 30 else '중립'}
-🔄 스토캐스틱 RSI: {stoch_str}
-
-📊 MACD: {macd:.1f} | Signal: {macd_sig:.1f} | Hist: {macd_hist:.1f} {'🟢' if macd_hist > 0 else '🔴'}
-
-📏 볼린저밴드(20,2): 상단={bb_upper} | 중간={bb_mid} | 하단={bb_lower} | 밴드폭={bb_bw}%{bb_squeeze}
-
-📐 ATR(14): {atr_str}
-🧭 ADX(14): {adx_str}
-📊 OBV: {obv_str}
-💰 VWAP(20): {vwap_str}
-
-📊 거래량: 현재봉 {last['volume']:.0f} (5봉평균 대비 {vol_ratio}%)
-
+현재가: {cur:.1f} USDT | 20봉 고가: {high20:.1f} | 저가: {low20:.1f}
+📈 EMA: 20={e20:.1f} | 50={e50:.1f} | 200={e200:.1f} → {trend}
+📉 RSI(14): {cur_rsi} {'⚠️과매수' if cur_rsi > 70 else '⚠️과매도' if cur_rsi < 30 else '중립'} | StochRSI: {stoch_str}
+📊 MACD: {macd:.1f} | Sig: {macd_sig:.1f} | Hist: {macd_hist:.1f} {'🟢' if macd_hist > 0 else '🔴'}
+📏 볼린저(20,2): 상={bb_upper} | 중={bb_mid} | 하={bb_lower}{bb_extra}
+📐 ATR(14): {atr_str} | ADX(14): {adx_str}
+💰 VWAP: {vwap_str} | OBV: {obv_str}
+📈 CVD: {cvd_str}
+📊 거래량: {last['volume']:.0f} (5봉평균 대비 {vol_ratio}%)
 📋 최근 5봉:
-{candle_str}
-━━━━━━━━━━━━━━━━━━━━━━━"""
+{candle_str}"""
 
 
 # ── 멀티 타임프레임 (동적) ──
@@ -582,148 +593,23 @@ def get_multi_timeframe_context(symbol="BTCUSDT", intervals=None, primary_interv
     if intervals is None:
         intervals = [primary_interval]
 
-    sections = []
-
-    for label in intervals:
-        bi = INTERVAL_MAP.get(label)
-        if not bi:
-            continue
-
-        try:
-            candles = fetch_klines(symbol, bi, 210)
-        except Exception as e:
-            sections.append(f"📊 {label} — ⚠️ 데이터 수집 실패: {e}")
-            continue
-
-        closes = [c["close"] for c in candles]
-        volumes = [c["volume"] for c in candles]
-        last = candles[-1]
-        cur = last["close"]
-
-        # EMA
-        e20 = calc_ema(closes, 20)[-1]
-        e50 = calc_ema(closes, 50)[-1]
-        e200 = calc_ema(closes, 200)[-1]
-
-        # RSI
-        rsi_vals = calc_rsi(closes)
-        cur_rsi = rsi_vals[-1] if rsi_vals else 0
-
-        # Stochastic RSI
-        stoch_k, stoch_d = calc_stoch_rsi(closes)
-        stoch_str = f"%K={stoch_k} | %D={stoch_d}" if stoch_k is not None else "N/A"
-        if stoch_k is not None:
-            if stoch_k > 80:
-                stoch_str += " ⚠️과매수"
-            elif stoch_k < 20:
-                stoch_str += " ⚠️과매도"
-            if stoch_d is not None:
-                stoch_str += " (↑)" if stoch_k > stoch_d else " (↓)"
-
-        # MACD
-        macd, macd_sig, macd_hist = calc_macd(closes)
-
-        # 볼린저밴드
-        bb_upper, bb_mid, bb_lower, bb_bw = calc_bollinger(closes)
-        bb_extra = ""
-        if bb_bw is not None:
-            if bb_bw < 3:
-                bb_extra = f" 밴드폭={bb_bw}% 🔴스퀴즈"
-            elif bb_bw < 5:
-                bb_extra = f" 밴드폭={bb_bw}% 🟡수축"
-            elif bb_bw > 10:
-                bb_extra = f" 밴드폭={bb_bw}% 🟢확장"
-            else:
-                bb_extra = f" 밴드폭={bb_bw}%"
-
-        # ATR
-        atr = calc_atr(candles)
-        atr_str = f"{atr} ({round(atr/cur*100, 2)}%)" if atr else "N/A"
-
-        # ADX
-        adx, plus_di, minus_di = calc_adx(candles)
-        adx_str = "N/A"
-        if adx is not None:
-            if adx >= 40:
-                strength = "🔥강추세"
-            elif adx >= 25:
-                strength = "📈추세"
-            elif adx >= 20:
-                strength = "약추세"
-            else:
-                strength = "↔횡보"
-            di_dir = "↑" if plus_di > minus_di else "↓"
-            adx_str = f"{adx}({strength}) +DI={plus_di} -DI={minus_di}{di_dir}"
-
-        # OBV
-        obv, obv_ema = calc_obv(candles)
-        obv_str = "N/A"
-        if obv is not None:
-            obv_str = f"{'매집↑' if obv > obv_ema else '분산↓'}"
-
-        # CVD (시장가 매수/매도 체결)
-        cvd, cvd_ema = calc_cvd(candles)
-        cvd_str = "N/A"
-        if cvd is not None:
-            cvd_str = f"{'매수우위↑' if cvd > cvd_ema else '매도우위↓'} (현재봉 델타 {last['delta']:+.0f})"
-
-        # VWAP
-        vwap = calc_vwap(candles)
-        vwap_str = f"{vwap:.1f} ({'위' if cur > vwap else '아래'})" if vwap else "N/A"
-
-
-
-        # 거래량
-        avg_vol5 = np.mean(volumes[-6:-1]) if len(volumes) >= 6 else volumes[-1]
-        vol_ratio = int(last["volume"] / avg_vol5 * 100) if avg_vol5 > 0 else 100
-
-        # 고저
-        recent20 = candles[-20:]
-        high20 = max(c["high"] for c in recent20)
-        low20 = min(c["low"] for c in recent20)
-
-        # 추세 판단
-        if cur > e20 > e50 > e200:
-            trend = "강한 상승 정배열 ↑"
-        elif cur > e20 > e50:
-            trend = "상승 추세 ↑"
-        elif cur < e20 < e50 < e200:
-            trend = "강한 하락 역배열 ↓"
-        elif cur < e20 < e50:
-            trend = "하락 추세 ↓"
-        else:
-            trend = "횡보/혼조 ↔"
-
-        # 최근 5봉
-        recent5 = candles[-5:]
-        candle_str = "\n".join(
-            f"  {datetime.fromtimestamp(c['time']/1000).strftime('%m/%d %H:%M')} "
-            f"O:{c['open']:.1f} H:{c['high']:.1f} L:{c['low']:.1f} C:{c['close']:.1f} V:{c['volume']:.0f}"
-            for c in recent5
-        )
-
-        is_primary = "(📸 차트 캡쳐 중)" if label == primary_interval else ""
-
-        sections.append(f"""📊 [{label}] 실시간 데이터 {is_primary} ({symbol}, Binance Futures)
-━━━━━━━━━━━━━━━━━━━━━━━
-현재가: {cur:.1f} USDT | 20봉 고가: {high20:.1f} | 저가: {low20:.1f}
-📈 EMA: 20={e20:.1f} | 50={e50:.1f} | 200={e200:.1f} → {trend}
-📉 RSI(14): {cur_rsi} {'⚠️과매수' if cur_rsi > 70 else '⚠️과매도' if cur_rsi < 30 else '중립'} | StochRSI: {stoch_str}
-📊 MACD: {macd:.1f} | Sig: {macd_sig:.1f} | Hist: {macd_hist:.1f} {'🟢' if macd_hist > 0 else '🔴'}
-📏 볼린저(20,2): 상={bb_upper} | 중={bb_mid} | 하={bb_lower}{bb_extra}
-📐 ATR(14): {atr_str} | ADX(14): {adx_str}
-💰 VWAP: {vwap_str} | OBV: {obv_str}
-📈 CVD: {cvd_str}
-📊 거래량: {last['volume']:.0f} (5봉평균 대비 {vol_ratio}%)
-📋 최근 5봉:
-{candle_str}""")
+    # TF별 수집은 네트워크 대기가 대부분 → 병렬로 가장 느린 요청 1개 수준으로 단축
+    if len(intervals) == 1:
+        sections = [_build_tf_section(symbol, intervals[0], primary_interval)]
+    else:
+        with ThreadPoolExecutor(max_workers=min(8, len(intervals))) as ex:
+            futures = [ex.submit(_build_tf_section, symbol, label, primary_interval)
+                       for label in intervals]
+            sections = [f.result() for f in futures]
+    sections = [s for s in sections if s]
 
     # 헤더 생성
+    src = kline_source_label()
     tf_list_str = " / ".join(intervals)
     if len(intervals) == 1:
-        header = f"📊 실시간 데이터 ({symbol} {intervals[0]}, Binance Futures)\n══════════════════════════════════════════════"
+        header = f"📊 실시간 데이터 ({symbol} {intervals[0]}, {src})\n══════════════════════════════════════════════"
     else:
-        header = f"""📊 멀티 타임프레임 실시간 데이터 ({symbol}, Binance Futures)
+        header = f"""📊 멀티 타임프레임 실시간 데이터 ({symbol}, {src})
 현재 차트: {primary_interval} | 조회 타임프레임: {tf_list_str} (모두 실시간)
 ══════════════════════════════════════════════"""
 

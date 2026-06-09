@@ -33,6 +33,11 @@ EVAL_HORIZON_MIN = {
 # 방향성 실현수익 판정 데드존(%)
 _WIN_THRESHOLD = 0.1
 
+# 왕복 거래 비용 가정(%) — 테이커 수수료 0.04%×2 + 슬리피지 여유분.
+# 저장 데이터는 총수익(gross) 그대로 두고, 통계 단계에서만 차감해
+# '실전 기대값' 지표(net)를 함께 보여준다 (과거 평가 행과의 일관성 유지).
+FEE_PCT = 0.1
+
 
 # ═══════════════════════════════════════════════
 # DB 연결 (streamlit secrets — 없으면 로컬 폴백)
@@ -83,6 +88,11 @@ def _init_table():
         """)
         # 기존 테이블에도 features 컬럼 보장(멱등) — 지표별 귀인(C)·타이밍(B) 데이터
         c.execute("ALTER TABLE rsi_wave_signals ADD COLUMN IF NOT EXISTS features TEXT")
+        # 평가/디둡 쿼리용 인덱스 (멱등) — 행이 쌓여도 풀스캔 방지
+        c.execute("CREATE INDEX IF NOT EXISTS idx_rws_evaluated "
+                  "ON rsi_wave_signals (evaluated)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_rws_sym_tf_created "
+                  "ON rsi_wave_signals (symbol, timeframe, created_at)")
         conn.commit()
         return True
     except Exception:
@@ -547,10 +557,16 @@ def _agg(rows):
     rets = [r["return_pct"] for r in directional if r.get("return_pct") is not None]
     mfes = [r["mfe_pct"] for r in directional if r.get("mfe_pct") is not None]
     maes = [r["mae_pct"] for r in directional if r.get("mae_pct") is not None]
+    # 수수료 차감(net) 지표 — 거래 비용을 빼고도 남는 신호인지 판별
+    wins_net = sum(1 for x in rets if x > FEE_PCT)
+    losses_net = sum(1 for x in rets if x < FEE_PCT)
+    decided_net = wins_net + losses_net
     return {
         "n": len(directional),
         "win_rate": round(wins / decided * 100, 1) if decided else None,
         "avg_return": round(sum(rets) / len(rets), 3) if rets else None,
+        "avg_return_net": round(sum(rets) / len(rets) - FEE_PCT, 3) if rets else None,
+        "win_rate_net": round(wins_net / decided_net * 100, 1) if decided_net else None,
         "avg_mfe": round(sum(mfes) / len(mfes), 3) if mfes else None,
         "avg_mae": round(sum(maes) / len(maes), 3) if maes else None,
     }

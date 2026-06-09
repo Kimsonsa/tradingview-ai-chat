@@ -16,10 +16,11 @@ from datetime import datetime, timedelta
 
 from core.session_manager import _get_conn, save_session, create_session
 from core.rsi_wave import (
-    analyze_rsi_wave, generate_wave_svg, generate_price_ladder_svg,
-    generate_summary_text, format_rsi_wave_for_ai, RSI_WAVE_SYSTEM_PROMPT,
+    analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
+    RSI_WAVE_SYSTEM_PROMPT,
 )
-from core.ai_client import analyze_chart
+from core.rsi_render import generate_wave_svg, generate_price_ladder_svg
+from core.ai_client import analyze_chart, is_claude_model
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".tradeai_config.json")
 POLL_INTERVAL = 5     # 초
@@ -31,7 +32,7 @@ _jobs_ready = False
 
 
 def _load_config():
-    """OpenAI 키/모델 — 로컬 설정파일(데스크탑) + 환경변수(클라우드) 병합.
+    """AI 키/모델 — 로컬 설정파일(데스크탑) + 환경변수(클라우드) 병합.
     환경변수가 있으면 우선 적용."""
     cfg = {}
     try:
@@ -41,9 +42,58 @@ def _load_config():
         pass
     if os.environ.get("OPENAI_API_KEY"):
         cfg["api_key"] = os.environ["OPENAI_API_KEY"]
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        cfg["claude_api_key"] = os.environ["ANTHROPIC_API_KEY"]
     if os.environ.get("TRADEAI_MODEL"):
         cfg["model"] = os.environ["TRADEAI_MODEL"]
     return cfg
+
+
+def _resolve_ai(cfg):
+    """설정에서 (model, 해당 프로바이더 키) 반환 — claude-* 모델이면 Claude 키 사용"""
+    model = cfg.get("model", "gpt-5.5")
+    if is_claude_model(model):
+        return model, cfg.get("claude_api_key")
+    return model, cfg.get("api_key")
+
+
+# ═══════════════════════════════════════════════
+# 영속 DB 커넥션 — 5초 폴링마다 새 커넥션을 여닫지 않는다.
+# (Supabase는 동시 커넥션 수 제한이 있고, 연결 수립 비용도 큼)
+# 워커 스레드와 클라우드 /process 핸들러가 공유하므로 락으로 보호.
+# ═══════════════════════════════════════════════
+
+_conn_lock = threading.Lock()
+_conn_holder = {"conn": None}
+
+
+def _pooled_conn():
+    """영속 커넥션 반환 (없거나 끊겼으면 재연결). 반드시 _conn_lock 안에서 사용."""
+    conn = _conn_holder.get("conn")
+    if conn is not None and not getattr(conn, "closed", True):
+        return conn
+    conn = _get_conn()
+    _conn_holder["conn"] = conn
+    return conn
+
+
+def _drop_conn():
+    """죽은 커넥션 폐기 — 다음 사용 시 재연결된다."""
+    conn = _conn_holder.get("conn")
+    _conn_holder["conn"] = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _safe_rollback(conn):
+    """롤백 시도 — 실패하면 커넥션 자체가 죽은 것이므로 폐기."""
+    try:
+        conn.rollback()
+    except Exception:
+        _drop_conn()
 
 
 # ═══════════════════════════════════════════════
@@ -55,100 +105,100 @@ def ensure_jobs_table():
     global _jobs_ready
     if _jobs_ready:
         return True
-    conn = _get_conn()
-    if conn is None:
-        return False
-    try:
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS analysis_jobs (
-                id TEXT PRIMARY KEY,
-                symbol TEXT,
-                status TEXT DEFAULT 'pending',
-                requested_at TEXT,
-                started_at TEXT,
-                finished_at TEXT,
-                result_session_id TEXT,
-                error TEXT,
-                source TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # 채팅 지원 컬럼 (기존 테이블에도 추가 — 멱등)
-        for coldef in ("job_type TEXT DEFAULT 'rsi_wave'", "prompt TEXT", "session_id TEXT"):
+    with _conn_lock:
+        conn = _pooled_conn()
+        if conn is None:
+            return False
+        try:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_jobs (
+                    id TEXT PRIMARY KEY,
+                    symbol TEXT,
+                    status TEXT DEFAULT 'pending',
+                    requested_at TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    result_session_id TEXT,
+                    error TEXT,
+                    source TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # 채팅 지원 컬럼 (기존 테이블에도 추가 — 멱등)
+            for coldef in ("job_type TEXT DEFAULT 'rsi_wave'", "prompt TEXT", "session_id TEXT"):
+                try:
+                    c.execute(f"ALTER TABLE analysis_jobs ADD COLUMN IF NOT EXISTS {coldef}")
+                except Exception:
+                    pass
+            # 모바일은 anon 키로 작업 등록(INSERT)과 상태 조회(SELECT)만 하면 된다.
+            # 과거 GRANT ALL 은 anon 키 노출 시 전체 큐 변조가 가능하므로 회수.
             try:
-                c.execute(f"ALTER TABLE analysis_jobs ADD COLUMN IF NOT EXISTS {coldef}")
+                c.execute("REVOKE ALL ON analysis_jobs FROM anon")
+                c.execute("GRANT SELECT, INSERT ON analysis_jobs TO anon")
+                c.execute("GRANT ALL ON analysis_jobs TO authenticated")
             except Exception:
                 pass
-        # 모바일은 anon 키로 INSERT/SELECT 해야 하므로 권한 부여
-        try:
-            c.execute("GRANT ALL ON analysis_jobs TO anon, authenticated")
+            # PostgREST 스키마 캐시 리로드 (신규 테이블이 REST API에 즉시 노출되도록)
+            try:
+                c.execute("NOTIFY pgrst, 'reload schema'")
+            except Exception:
+                pass
+            conn.commit()
+            _jobs_ready = True
+            return True
         except Exception:
-            pass
-        # PostgREST 스키마 캐시 리로드 (신규 테이블이 REST API에 즉시 노출되도록)
-        try:
-            c.execute("NOTIFY pgrst, 'reload schema'")
-        except Exception:
-            pass
-        conn.commit()
-        _jobs_ready = True
-        return True
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
+            _safe_rollback(conn)
+            return False
 
 
 def _claim_job():
     """pending 작업 1개를 원자적으로 processing 점유 → (id, symbol) 또는 None"""
-    conn = _get_conn()
-    if conn is None:
-        return None
-    try:
-        c = conn.cursor()
-        now = datetime.now()
-        stale_iso = (now - timedelta(seconds=STALE_SECONDS)).isoformat()
-        # pending 작업 OR 점유 후 멈춘(죽은 워커) stale 작업을 재점유 → self-healing
-        c.execute("""
-            UPDATE analysis_jobs
-               SET status='processing', started_at=%s, updated_at=CURRENT_TIMESTAMP
-             WHERE id = (
-                   SELECT id FROM analysis_jobs
-                    WHERE status='pending'
-                       OR (status='processing' AND COALESCE(started_at, '') < %s)
-                    ORDER BY requested_at
-                    LIMIT 1 FOR UPDATE SKIP LOCKED)
-            RETURNING id, symbol, COALESCE(job_type, 'rsi_wave'), prompt, session_id
-        """, (now.isoformat(), stale_iso))
-        row = c.fetchone()
-        conn.commit()
-        return row if row else None  # (id, symbol, job_type, prompt, session_id)
-    except Exception:
-        conn.rollback()
-        return None
-    finally:
-        conn.close()
+    with _conn_lock:
+        conn = _pooled_conn()
+        if conn is None:
+            return None
+        try:
+            c = conn.cursor()
+            now = datetime.now()
+            stale_iso = (now - timedelta(seconds=STALE_SECONDS)).isoformat()
+            # pending 작업 OR 점유 후 멈춘(죽은 워커) stale 작업을 재점유 → self-healing
+            c.execute("""
+                UPDATE analysis_jobs
+                   SET status='processing', started_at=%s, updated_at=CURRENT_TIMESTAMP
+                 WHERE id = (
+                       SELECT id FROM analysis_jobs
+                        WHERE status='pending'
+                           OR (status='processing' AND COALESCE(started_at, '') < %s)
+                        ORDER BY requested_at
+                        LIMIT 1 FOR UPDATE SKIP LOCKED)
+                RETURNING id, symbol, COALESCE(job_type, 'rsi_wave'), prompt, session_id
+            """, (now.isoformat(), stale_iso))
+            row = c.fetchone()
+            conn.commit()
+            return row if row else None  # (id, symbol, job_type, prompt, session_id)
+        except Exception:
+            _safe_rollback(conn)
+            return None
 
 
 def _finish_job(job_id, session_id=None, error=None):
-    conn = _get_conn()
-    if conn is None:
-        return
-    try:
-        c = conn.cursor()
-        c.execute("""
-            UPDATE analysis_jobs
-               SET status=%s, finished_at=%s, result_session_id=%s, error=%s,
-                   updated_at=CURRENT_TIMESTAMP
-             WHERE id=%s
-        """, ('error' if error else 'done', datetime.now().isoformat(),
-              session_id, error, job_id))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        conn.close()
+    with _conn_lock:
+        conn = _pooled_conn()
+        if conn is None:
+            return
+        try:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE analysis_jobs
+                   SET status=%s, finished_at=%s, result_session_id=%s, error=%s,
+                       updated_at=CURRENT_TIMESTAMP
+                 WHERE id=%s
+            """, ('error' if error else 'done', datetime.now().isoformat(),
+                  session_id, error, job_id))
+            conn.commit()
+        except Exception:
+            _safe_rollback(conn)
 
 
 # ═══════════════════════════════════════════════
@@ -175,8 +225,7 @@ def _build_rsi_report(symbol, history=None):
     summary = generate_summary_text(results)
 
     cfg = _load_config()
-    api_key = cfg.get("api_key")
-    model = cfg.get("model", "gpt-5.5")
+    model, api_key = _resolve_ai(cfg)
     ai_text = ""
     if api_key:
         try:
@@ -253,12 +302,11 @@ def run_chat(session_id, prompt, symbol):
     sess["messages"].append({"role": "user", "content": prompt})
 
     cfg = _load_config()
-    api_key = cfg.get("api_key")
-    model = cfg.get("model", "gpt-5.5")
+    model, api_key = _resolve_ai(cfg)
     if not api_key:
         sess["messages"].append({
             "role": "assistant",
-            "content": "⚠️ 서버에 OpenAI 키가 설정되지 않아 답변할 수 없습니다.",
+            "content": "⚠️ 서버에 AI API 키가 설정되지 않아 답변할 수 없습니다.",
         })
         save_session(sess)
         return sess["id"]

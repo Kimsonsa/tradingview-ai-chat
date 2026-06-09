@@ -867,6 +867,13 @@
         <div class="setup-hint">Render 배포 URL. 비워두면 <strong>데스크탑 앱</strong>이 켜져 있을 때만 분석됨. 입력하면 PC 없이 폰만으로 분석 가능.</div>
       </div>
 
+      <div class="setup-field">
+        <label class="setup-label">분석 서버 토큰 (선택)</label>
+        <input id="setup-worker-token" class="setup-input" type="password"
+               placeholder="WORKER_TOKEN 값">
+        <div class="setup-hint">서버에 <code>WORKER_TOKEN</code> 환경변수를 설정한 경우에만 입력. 비워두면 토큰 없이 호출.</div>
+      </div>
+
       <button id="setup-submit" class="setup-btn" onclick="saveSetup()">연결하기</button>
       <div id="setup-error" class="setup-error"></div>
 
@@ -972,6 +979,15 @@
       };
     }
 
+    /* 클라우드 워커 엔드포인트 URL — 토큰 설정 시 ?token= 자동 첨부 */
+    function workerEndpoint(path, params) {
+      const base = CONFIG.workerUrl.replace(/\/+$/, '');
+      const qs = new URLSearchParams(params || {});
+      if (CONFIG.workerToken) qs.set('token', CONFIG.workerToken);
+      const q = qs.toString();
+      return base + path + (q ? '?' + q : '');
+    }
+
     async function fetchSessions() {
       const url = `${SUPABASE_URL}/rest/v1/trade_sessions?select=id,symbol,interval,status,created_at,closed_at,summary&order=created_at.desc`;
       const resp = await fetch(url, { headers: apiHeaders() });
@@ -1018,7 +1034,7 @@
         }
         // 클라우드 워커 URL이 설정돼 있으면 즉시 처리 트리거 (PC 불필요)
         if (CONFIG.workerUrl) {
-          fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' })
+          fetch(workerEndpoint('/process'), { method: 'POST' })
             .catch(() => { /* 콜드스타트/일시오류 — 폴링이 결과를 확인 */ });
         }
         showToast(`🌊 ${symbol} 분석 요청됨 — 처리 중...`);
@@ -1033,7 +1049,7 @@
     // (단발 핑은 앱 백그라운드 시 취소되거나 콜드스타트 페이지에 먹힐 수 있음)
     function pingProcess() {
       if (CONFIG.workerUrl) {
-        fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
+        fetch(workerEndpoint('/process'), { method: 'POST' }).catch(() => {});
       }
     }
 
@@ -1135,7 +1151,7 @@
           return;
         }
         if (CONFIG.workerUrl) {
-          fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
+          fetch(workerEndpoint('/process'), { method: 'POST' }).catch(() => {});
         }
         pollChat(jobId, 0);
       } catch (e) {
@@ -1214,7 +1230,7 @@
           return;
         }
         if (CONFIG.workerUrl) {
-          fetch(CONFIG.workerUrl.replace(/\/+$/, '') + '/process', { method: 'POST' }).catch(() => {});
+          fetch(workerEndpoint('/process'), { method: 'POST' }).catch(() => {});
         }
         pollRsi(jobId, 0);
       } catch (e) {
@@ -1263,8 +1279,7 @@
         return;
       }
       try {
-        const base = CONFIG.workerUrl.replace(/\/+$/, '');
-        const r = await fetch(base + '/stats?evaluate=1');
+        const r = await fetch(workerEndpoint('/stats', { evaluate: 1 }));
         const d = await r.json();
         if (!d.ok) {
           el.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">통계 오류</div><div class="empty-desc">' + escapeHtml(d.error || '') + '</div></div>';
@@ -1385,6 +1400,7 @@
     function showSetup() {
       document.getElementById('setup-key').value = CONFIG.anonKey || '';
       document.getElementById('setup-worker').value = CONFIG.workerUrl || '';
+      document.getElementById('setup-worker-token').value = CONFIG.workerToken || '';
       showScreen('setup-screen');
     }
 
@@ -1431,7 +1447,8 @@
         }
 
         const workerUrl = (document.getElementById('setup-worker').value || '').trim().replace(/\/+$/, '');
-        saveConfig({ anonKey: key, workerUrl: workerUrl });
+        const workerToken = (document.getElementById('setup-worker-token').value || '').trim();
+        saveConfig({ anonKey: key, workerUrl: workerUrl, workerToken: workerToken });
         showScreen('list-screen');
         loadSessions();
         showToast('✅ 연결 성공!');

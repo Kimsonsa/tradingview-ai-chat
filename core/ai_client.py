@@ -1,8 +1,40 @@
 """
-OpenAI Vision API 클라이언트 — 차트 이미지 + 데이터 결합 분석
+AI 클라이언트 — 차트 이미지 + 데이터 결합 분석
+OpenAI(gpt-*)와 Anthropic Claude(claude-*) 듀얼 프로바이더.
+모델명으로 프로바이더를 판별하므로 호출부는 model 문자열만 바꾸면 된다.
 """
 import json
 from openai import OpenAI
+
+
+def is_claude_model(model):
+    """모델명으로 프로바이더 판별 — claude-* 는 Anthropic API 사용"""
+    return (model or "").startswith("claude")
+
+
+# 채팅 UI에서 선택 가능한 Claude 모델 (기본: 최상위 Fable 5)
+CLAUDE_MODELS = [
+    "claude-fable-5",      # 최신·최강 (Opus 위 티어, $10/$50 per 1M tokens)
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+]
+
+# 적응형 사고(adaptive thinking)를 지원하는 모델 프리픽스.
+# 해당 모델엔 thinking을 켜서 복잡한 차트 분석 품질을 높인다.
+# (haiku-4-5 등 미지원 모델에 보내면 400이므로 화이트리스트 방식)
+_ADAPTIVE_THINKING_PREFIXES = (
+    "claude-fable", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+    "claude-sonnet-4-6",
+)
+
+
+def _claude_kwargs(model):
+    """모델별 Claude 추가 파라미터"""
+    extra = {}
+    if model.startswith(_ADAPTIVE_THINKING_PREFIXES):
+        extra["thinking"] = {"type": "adaptive"}
+    return extra
 
 
 SYSTEM_PROMPT_BASE = """당신은 암호화폐/주식 기술적 분석 전문가입니다. 사용자는 차트를 볼 줄 아는 숙련 트레이더입니다.
@@ -100,63 +132,62 @@ SYSTEM_PROMPT_BRIEFING = """
 
 def analyze_chart(api_key, model, messages, image_base64=None, market_data="", extra_images=None, system_prompt_override=None):
     """
-    차트 이미지 + 시장 데이터로 AI 분석 스트리밍.
+    차트 이미지 + 시장 데이터로 AI 분석 스트리밍 (OpenAI / Claude 공용).
     extra_images: 추가 이미지 base64 문자열 리스트
     system_prompt_override: 시스템 프롬프트 완전 교체 (RSI 파동 분석 등)
     Yields: content chunks (str)
     """
-    client = OpenAI(api_key=api_key)
-
-    # 시스템 프롬프트 결정
+    # ── 시스템 프롬프트 결정 (프로바이더 공통) ──
+    has_images = image_base64 is not None or (extra_images and len(extra_images) > 0)
     if system_prompt_override:
         system_msg = system_prompt_override
     else:
         # 이미지가 있을 때만 브리핑 지시 포함
-        has_images = image_base64 is not None or (extra_images and len(extra_images) > 0)
         system_msg = SYSTEM_PROMPT_BASE
         if has_images:
             system_msg += SYSTEM_PROMPT_BRIEFING
-    if market_data:
+    # 실시간 데이터는 한 곳에만 넣는다 (중복 전송 = 토큰 2배):
+    # override(RSI 파동 등) → 시스템 프롬프트, 일반 채팅 → 마지막 user 메시지
+    if market_data and system_prompt_override:
         system_msg += f"\n\n{market_data}"
 
-    api_messages = [{"role": "system", "content": system_msg}]
-
-    # 이전 대화 내역 추가 (최근 20개만 — 토큰 초과 방지)
+    # ── 이전 대화 내역 (최근 20개만 — 토큰 초과 방지) ──
     recent_messages = messages[:-1]
     if len(recent_messages) > 20:
         recent_messages = recent_messages[-20:]
-    for msg in recent_messages:
-        api_messages.append({"role": msg["role"], "content": msg["content"]})
+    history = [{"role": m["role"], "content": m["content"]} for m in recent_messages]
 
-    # 마지막 메시지 (이미지 포함 가능)
-    last_msg = messages[-1]
-    last_text = last_msg["content"]
-
-    # 실시간 데이터를 사용자 메시지에도 포함 (AI가 시스템 프롬프트를 무시하는 것 방지)
+    # ── 마지막 메시지 텍스트 ──
+    last_text = messages[-1]["content"]
+    # 일반 채팅: 실시간 데이터를 마지막 user 메시지에 포함
+    # (시스템 프롬프트보다 마지막 user 메시지의 데이터를 모델이 더 잘 따름)
     if market_data and not system_prompt_override:
         last_text = last_text + f"\n\n{market_data}"
 
-    if image_base64:
-        content_parts = [
-            {"type": "text", "text": last_text},
-            {
+    # 첨부 이미지 (첫 장 + 추가 장, base64 JPEG)
+    images = ([image_base64] if image_base64 else []) + list(extra_images or [])
+
+    if is_claude_model(model):
+        yield from _stream_claude(api_key, model, system_msg, history, last_text, images)
+    else:
+        yield from _stream_openai(api_key, model, system_msg, history, last_text, images)
+
+
+def _stream_openai(api_key, model, system_msg, history, last_text, images):
+    """OpenAI chat.completions 스트리밍"""
+    client = OpenAI(api_key=api_key)
+    api_messages = [{"role": "system", "content": system_msg}] + history
+
+    if images:
+        content_parts = [{"type": "text", "text": last_text}]
+        for b64 in images:
+            content_parts.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/jpeg;base64,{image_base64}",
+                    "url": f"data:image/jpeg;base64,{b64}",
                     "detail": "high"
                 }
-            }
-        ]
-        # 추가 이미지들
-        if extra_images:
-            for extra_b64 in extra_images:
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{extra_b64}",
-                        "detail": "high"
-                    }
-                })
+            })
         api_messages.append({"role": "user", "content": content_parts})
     else:
         api_messages.append({"role": "user", "content": last_text})
@@ -180,6 +211,44 @@ def analyze_chart(api_key, model, messages, image_base64=None, market_data="", e
         content = chunk.choices[0].delta.content
         if content:
             yield content
+
+
+def _stream_claude(api_key, model, system_msg, history, last_text, images):
+    """Anthropic Messages API 스트리밍.
+
+    OpenAI와의 포맷 차이:
+    - 시스템 프롬프트는 messages 배열이 아닌 별도 system 파라미터
+    - 이미지는 image_url 대신 {"type": "image", "source": {"type": "base64", ...}}
+    - opus-4.7+ 는 temperature 미지원 → 전송하지 않음 (adaptive thinking 사용)
+    """
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+
+    api_messages = list(history)
+    if images:
+        content_blocks = [{"type": "text", "text": last_text}]
+        for b64 in images:
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": b64,
+                },
+            })
+        api_messages.append({"role": "user", "content": content_blocks})
+    else:
+        api_messages.append({"role": "user", "content": last_text})
+
+    with client.messages.stream(
+        model=model,
+        max_tokens=16000,
+        system=system_msg,
+        messages=api_messages,
+        **_claude_kwargs(model),
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
 
 
 # ─── 거래 종료 시 대화 분석 ───
@@ -212,37 +281,54 @@ TRADE_SUMMARY_PROMPT = """아래는 트레이더와 AI 어시스턴트의 대화
 
 def analyze_trade_summary(api_key, model, messages):
     """
-    거래 종료 시 대화 전체를 분석하여 매매 요약 반환.
+    거래 종료 시 대화 전체를 분석하여 매매 요약 반환 (OpenAI / Claude 공용).
     반환: dict (파싱 실패 시 기본값 반환)
     """
-    client = OpenAI(api_key=api_key)
-
     # 대화 내용을 텍스트로 변환
     conversation_text = ""
     for msg in messages:
         role = "트레이더" if msg["role"] == "user" else "AI"
         conversation_text += f"[{role}]: {msg['content']}\n\n"
 
-    api_messages = [
-        {"role": "system", "content": TRADE_SUMMARY_PROMPT},
-        {"role": "user", "content": conversation_text},
-    ]
-
-    # 비스트리밍으로 한번에 받기
-    is_new = model.startswith("gpt-5") or model.startswith("o3") or model.startswith("o4")
-    kwargs = {
-        "model": model,
-        "messages": api_messages,
-    }
-    if is_new:
-        kwargs["max_completion_tokens"] = 1000
-    else:
-        kwargs["max_tokens"] = 1000
-        kwargs["temperature"] = 0.3
-
     try:
-        response = client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content.strip()
+        if is_claude_model(model):
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=model,
+                max_tokens=1000,
+                system=TRADE_SUMMARY_PROMPT,
+                messages=[{"role": "user", "content": conversation_text}],
+            )
+            content = next(
+                (b.text for b in response.content if b.type == "text"), ""
+            ).strip()
+        else:
+            client = OpenAI(api_key=api_key)
+            api_messages = [
+                {"role": "system", "content": TRADE_SUMMARY_PROMPT},
+                {"role": "user", "content": conversation_text},
+            ]
+            is_new = model.startswith("gpt-5") or model.startswith("o3") or model.startswith("o4")
+            kwargs = {
+                "model": model,
+                "messages": api_messages,
+                # JSON 모드 — 모델이 유효한 JSON만 출력하도록 강제 (파싱 실패 방지)
+                "response_format": {"type": "json_object"},
+            }
+            if is_new:
+                kwargs["max_completion_tokens"] = 1000
+            else:
+                kwargs["max_tokens"] = 1000
+                kwargs["temperature"] = 0.3
+
+            try:
+                response = client.chat.completions.create(**kwargs)
+            except Exception:
+                # 일부 모델이 JSON 모드를 지원하지 않으면 일반 모드로 재시도
+                kwargs.pop("response_format", None)
+                response = client.chat.completions.create(**kwargs)
+            content = response.choices[0].message.content.strip()
 
         # JSON 파싱 (코드블록 감싸져 있을 수 있음)
         if content.startswith("```"):

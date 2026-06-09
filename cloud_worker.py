@@ -7,8 +7,9 @@ PC 없이도 폰만으로 분석이 가능해진다.
 
 필요한 환경변수:
   SUPABASE_HOST, SUPABASE_PORT, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD
-  OPENAI_API_KEY        (없으면 결정론적 리포트만 생성)
-  TRADEAI_MODEL         (선택, 기본 gpt-5.5)
+  OPENAI_API_KEY        (gpt-* 모델용 — 키 없으면 결정론적 리포트만 생성)
+  ANTHROPIC_API_KEY     (claude-* 모델용)
+  TRADEAI_MODEL         (선택, 기본 gpt-5.5 — claude-opus-4-8 등 지정 가능)
   WORKER_TOKEN          (선택, 설정 시 /process 호출에 X-Worker-Token 헤더 요구)
 
 로컬 실행:  uvicorn cloud_worker:app --host 0.0.0.0 --port 8000
@@ -70,9 +71,12 @@ def health():
 
 
 @app.get("/stats")
-def stats(symbol: str = "", evaluate: int = 0):
+def stats(symbol: str = "", evaluate: int = 0, token: str = "",
+          x_worker_token: str = Header(default="")):
     """RSI 신호 성적표 — 모바일 성적표 화면이 읽는다.
-    evaluate=1 이면 호출 시 성숙 신호 평가도 1회 수행(소량)."""
+    evaluate=1 이면 호출 시 성숙 신호 평가도 1회 수행(소량).
+    WORKER_TOKEN 설정 시 헤더(X-Worker-Token) 또는 ?token= 쿼리 필요."""
+    _check_token(x_worker_token or token)
     try:
         from core.signal_logger import (
             get_signal_stats, get_weight_suggestions, evaluate_pending_signals,
@@ -126,9 +130,10 @@ def _check_token(token):
 
 @app.post("/process")
 @app.get("/process")
-def process(x_worker_token: str = Header(default="")):
-    """대기 중인 분석 작업을 처리. 모바일이 작업 INSERT 후 호출."""
-    _check_token(x_worker_token)
+def process(token: str = "", x_worker_token: str = Header(default="")):
+    """대기 중인 분석 작업을 처리. 모바일이 작업 INSERT 후 호출.
+    WORKER_TOKEN 설정 시 헤더(X-Worker-Token) 또는 ?token= 쿼리 필요."""
+    _check_token(x_worker_token or token)
     ensure_jobs_table()
     try:
         n = process_pending_jobs(max_jobs=5)
