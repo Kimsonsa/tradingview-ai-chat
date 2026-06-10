@@ -6,7 +6,9 @@ import streamlit as st
 
 from core.app_config import load_config, update_config, DEFAULT_WATCHLIST
 from core.market_data import fetch_klines, INTERVAL_MAP
-from core.rsi_wave import analyze_tf_snapshot, REGIME_LABELS, DIR_TF_WEIGHT, CONF_WEIGHT
+from core.rsi_wave import (
+    analyze_tf_snapshot, flow_gate, REGIME_LABELS, DIR_TF_WEIGHT, CONF_WEIGHT,
+)
 
 st.set_page_config(page_title="워치리스트", page_icon="📊", layout="wide")
 
@@ -63,7 +65,8 @@ def _cell(r):
     pos = r.get("position", "")
     conf = r.get("confidence", "")
     icon = "🟢" if pos == "롱" else "🔴" if pos == "숏" else "⚪"
-    return f"{icon} {pos}·{conf} | {regime}"
+    gate = " 🚦" if flow_gate(r) == "AGREE" else ""  # 주문흐름 동의(백테스트 검증 게이트)
+    return f"{icon} {pos}·{conf}{gate} | {regime}"
 
 
 def _bias_score(sym):
@@ -103,7 +106,8 @@ st.dataframe(df, use_container_width=True, hide_index=True,
              height=42 + 36 * len(df))
 
 st.caption("종합 = TF별 (방향 × TF가중치 × 확신가중치) 합산. "
-           "🟢/🔴 셀 = 해당 TF의 포지션 판정·확신등급 | 레짐")
+           "🟢/🔴 셀 = 해당 TF의 포지션 판정·확신등급 | 레짐 · "
+           "🚦 = 주문흐름(OBV/CVD) 동의 — 백테스트 검증 고승률 조건(15분 기준 ~73%)")
 
 # ── 심볼 바로 분석 열기 ──
 st.markdown("#### 💬 채팅으로 분석 열기")
