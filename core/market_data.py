@@ -87,13 +87,14 @@ def kline_source_label():
     return "Binance Futures" if _kline_pref["idx"] == 0 else "Binance Spot(미러·선물 차단 폴백)"
 
 
-def fetch_klines(symbol="BTCUSDT", interval="1h", limit=KLINE_WARMUP):
+def fetch_klines(symbol="BTCUSDT", interval="1h", limit=KLINE_WARMUP, end_time_ms=None):
     """Binance 캔들 데이터 가져오기.
 
     선물 API(fapi)가 지역차단(451)되는 환경(미국 Streamlit Cloud 등)에서는
     차단되지 않는 공개 스팟 미러(data-api.binance.vision)로 자동 폴백한다.
     두 엔드포인트의 kline 배열 포맷이 동일하므로 파싱 로직은 공통.
     limit은 엔드포인트별 상한(선물 1500 / 스팟 1000)으로 자동 클램프된다.
+    end_time_ms: 이 시각(밀리초) 이전 캔들만 — 백테스트 과거 페이지네이션용.
     """
     # 이전에 성공한 엔드포인트를 먼저 시도 → 실패 시 나머지
     order = [_kline_pref["idx"], 1 - _kline_pref["idx"]]
@@ -101,6 +102,8 @@ def fetch_klines(symbol="BTCUSDT", interval="1h", limit=KLINE_WARMUP):
     for i in order:
         params = {"symbol": symbol, "interval": interval,
                   "limit": min(limit, _KLINE_MAX_LIMIT[i])}
+        if end_time_ms:
+            params["endTime"] = int(end_time_ms)
         try:
             res = requests.get(_KLINE_ENDPOINTS[i], params=params, timeout=10)
             res.raise_for_status()

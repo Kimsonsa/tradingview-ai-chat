@@ -330,23 +330,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ─── 설정 파일 (로컬 영구 저장) ───
-import json, os
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), ".tradeai_config.json")
-
-def load_config():
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_config(data):
-    try:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+# ─── 설정 파일 (로컬 영구 저장 — 멀티페이지 공용 모듈) ───
+from core.app_config import load_config, update_config
 
 _config = load_config()
 
@@ -357,15 +342,21 @@ if "claude_api_key" not in st.session_state:
     st.session_state.claude_api_key = _config.get("claude_api_key", "")
 if "model" not in st.session_state:
     st.session_state.model = _config.get("model", "gpt-5.5")
+if "account_size" not in st.session_state:
+    st.session_state.account_size = float(_config.get("account_size", 0) or 0)
+if "risk_pct" not in st.session_state:
+    st.session_state.risk_pct = float(_config.get("risk_pct", 1.0) or 1.0)
 
 
 def _persist_config():
-    """현재 설정 전체를 로컬 설정파일에 저장"""
-    save_config({
-        "api_key": st.session_state.api_key,
-        "claude_api_key": st.session_state.claude_api_key,
-        "model": st.session_state.model,
-    })
+    """현재 설정을 로컬 설정파일에 병합 저장 (watchlist 등 다른 키 보존)"""
+    update_config(
+        api_key=st.session_state.api_key,
+        claude_api_key=st.session_state.claude_api_key,
+        model=st.session_state.model,
+        account_size=st.session_state.account_size,
+        risk_pct=st.session_state.risk_pct,
+    )
 
 
 def _active_api_key():
@@ -428,6 +419,19 @@ if not st.session_state.tabs and st.session_state.viewing_history is None:
             pass
         st.session_state.tabs[new_sess["id"]] = new_sess
         st.session_state.active_tab = new_sess["id"]
+
+# 워치리스트 페이지에서 "분석 열기"로 넘어온 경우 → 해당 심볼 탭 활성화/생성
+_open_sym = st.session_state.pop("_open_symbol", None)
+if _open_sym:
+    _exist = next((tid for tid, s in st.session_state.tabs.items()
+                   if s.get("symbol") == _open_sym), None)
+    if _exist:
+        st.session_state.active_tab = _exist
+    else:
+        _ns = create_session(symbol=_open_sym, interval="15분")
+        st.session_state.tabs[_ns["id"]] = _ns
+        st.session_state.active_tab = _ns["id"]
+    st.session_state.viewing_history = None
 
 
 def _safe_save_session(session):
@@ -512,6 +516,51 @@ def _close_position(sess):
         list(st.session_state.tabs.keys())[0] if st.session_state.tabs else None
     )
     st.rerun()
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _current_price(symbol):
+    """현재가 — 1분봉 마지막 종가 (10초 캐시로 rerun 비용 절감)"""
+    from core.market_data import fetch_klines
+    return fetch_klines(symbol, "1m", 2)[-1]["close"]
+
+
+def _position_pnl(p, cur):
+    """포지션 dict + 현재가 → (PnL%, 손절까지%, 목표까지%)"""
+    entry = p.get("entry")
+    if not entry or not cur:
+        return None, None, None
+    if p.get("direction") == "롱":
+        pnl = (cur - entry) / entry * 100
+    else:
+        pnl = (entry - cur) / entry * 100
+    to_stop = (p["stop"] - cur) / cur * 100 if p.get("stop") else None
+    to_target = (p["target"] - cur) / cur * 100 if p.get("target") else None
+    return pnl, to_stop, to_target
+
+
+def _position_context(sess):
+    """AI 컨텍스트에 주입할 사용자 보유 포지션 블록 (없으면 '')"""
+    p = sess.get("position")
+    if not p:
+        return ""
+    try:
+        cur = _current_price(sess.get("symbol") or "BTCUSDT")
+    except Exception:
+        cur = None
+    pnl, _, _ = _position_pnl(p, cur)
+    parts = [f"방향 {p.get('direction')}", f"진입가 {p.get('entry')}"]
+    if p.get("stop"):
+        parts.append(f"손절 {p['stop']}")
+    if p.get("target"):
+        parts.append(f"목표 {p['target']}")
+    if cur is not None and pnl is not None:
+        parts.append(f"현재가 {cur} (PnL {pnl:+.2f}%)")
+    return (
+        "\n\n📌 사용자 실제 보유 포지션: " + " | ".join(parts) +
+        "\n(이 포지션 기준으로 손절/익절/홀딩 관점을 포함해 답하라. "
+        "단, 데이터가 포지션과 반대 방향이면 동조하지 말고 분명히 경고할 것)"
+    )
 
 
 # ═══════════════════════════════════════════════
@@ -636,6 +685,12 @@ with st.sidebar:
                 st.session_state.viewing_history = s["id"]
                 st.rerun()
 
+    # ── 페이지 바로가기 ──
+    st.markdown('<div class="history-label">도구</div>', unsafe_allow_html=True)
+    st.page_link("pages/1_워치리스트.py", label="📊 워치리스트")
+    st.page_link("pages/2_신호성적표.py", label="📈 신호 성적표")
+    st.page_link("pages/3_백테스트.py", label="🧪 백테스트")
+
     # ── 설정 (하단 접이식) ──
     st.markdown("---")
     with st.expander("⚙️ 설정", expanded=False):
@@ -659,145 +714,15 @@ with st.sidebar:
             st.session_state.model = model
             _persist_config()
 
-    # ── 신호 정확도 통계 (RSI 파동 가중치 검증) ──
-    with st.expander("📈 신호 통계", expanded=False):
-        st.caption("RSI 파동 신호의 실제 적중률을 추적합니다.")
-        if st.button("평가 갱신 & 통계 보기", use_container_width=True, key="eval_stats"):
-            try:
-                from core.signal_logger import (
-                    evaluate_pending_signals, get_signal_stats, get_weight_suggestions,
-                    get_attribution_stats, get_timing_stats,
-                )
-                with st.spinner("성숙한 신호 평가 중..."):
-                    n_eval = evaluate_pending_signals()
-                    st.session_state._signal_stats = get_signal_stats()
-                    st.session_state._signal_suggestions = get_weight_suggestions()
-                    st.session_state._signal_attr = get_attribution_stats()
-                    try:
-                        st.session_state._signal_timing = get_timing_stats(max_groups=20)
-                    except Exception:
-                        st.session_state._signal_timing = {}
-                    st.session_state._signal_eval_n = n_eval
-            except Exception as e:
-                st.session_state._signal_stats = {"error": str(e)}
-
-        stats = st.session_state.get("_signal_stats")
-        if stats and not stats.get("error"):
-            n_eval = st.session_state.get("_signal_eval_n", 0)
-            ov = stats.get("overall", {})
-            st.markdown(
-                f"**평가 완료: {stats.get('total_evaluated', 0)}건** "
-                f"(이번에 {n_eval}건 신규 평가)"
-            )
-            if ov.get("n"):
-                wr = ov.get("win_rate")
-                ar = ov.get("avg_return")
-                wr_net = ov.get("win_rate_net")
-                ar_net = ov.get("avg_return_net")
-                st.markdown(
-                    f"- 전체 적중률: **{wr if wr is not None else '-'}%** "
-                    f"(n={ov['n']})\n"
-                    f"- 평균 실현수익: **{ar if ar is not None else '-'}%** "
-                    f"(MFE {ov.get('avg_mfe')}% / MAE {ov.get('avg_mae')}%)\n"
-                    f"- 수수료 차감 후: 적중률 **{wr_net if wr_net is not None else '-'}%** · "
-                    f"평균 **{ar_net if ar_net is not None else '-'}%** "
-                    f"(왕복 비용 0.1% 가정)"
-                )
-
-                _MIN_N = 20  # 이 미만은 표본부족 → 신뢰하지 말 것
-
-                def _render_group(title, group):
-                    rows = [(k, v) for k, v in group.items() if v.get("n")]
-                    if not rows:
-                        return
-                    lines = [f"\n**{title}**"]
-                    lines.append("| 항목 | 적중률 | 평균수익 | n |")
-                    lines.append("|---|---|---|---|")
-                    for k, v in sorted(rows, key=lambda x: -(x[1].get("n") or 0)):
-                        wr = v.get("win_rate")
-                        ar = v.get("avg_return")
-                        n = v.get("n") or 0
-                        # 표본부족은 ⚠️로 표시(소표본 적중률 착시 방지)
-                        n_disp = f"{n} ⚠️" if n < _MIN_N else f"{n}"
-                        lines.append(
-                            f"| {k} | {wr if wr is not None else '-'}% | "
-                            f"{ar if ar is not None else '-'}% | {n_disp} |"
-                        )
-                    st.markdown("\n".join(lines))
-
-                _render_group("📈 롱/숏 방향별", stats.get("by_position", {}))
-                _render_group("신호유형별", stats.get("by_signal_type", {}))
-                _render_group("확신등급별", stats.get("by_confidence", {}))
-                _render_group("레짐별", stats.get("by_regime", {}))
-                _render_group("타임프레임별", stats.get("by_timeframe", {}))
-                _render_group("종목별", stats.get("by_symbol", {}))
-                st.caption(f"⚠️ = 표본 {_MIN_N}건 미만(우연일 수 있어 신뢰 낮음)")
-
-                # ── B: 추천 진입 타이밍 ──
-                tm = st.session_state.get("_signal_timing") or {}
-                if tm.get("n_analyses"):
-                    st.markdown(f"\n**🎯 추천 진입 타이밍 (분석 {tm['n_analyses']}건)**")
-                    wr = tm.get("win_rate")
-                    st.markdown(
-                        f"- 시나리오 적중률: **{wr if wr is not None else '-'}%** "
-                        f"(승 {tm.get('win', 0)} / 패 {tm.get('loss', 0)} · 미트리거 {tm.get('not_triggered', 0)})"
-                    )
-                    bg = tm.get("by_grade") or {}
-                    if bg:
-                        lines = ["| 등급 | 적중률 | 승/패 |", "|---|---|---|"]
-                        for g, v in bg.items():
-                            gwr = v.get("win_rate")
-                            lines.append(f"| {g} | {gwr if gwr is not None else '-'}% | {v.get('win',0)}/{v.get('loss',0)} |")
-                        st.markdown("\n".join(lines))
-
-                # ── C: 지표별 귀인 ──
-                attr = st.session_state.get("_signal_attr") or {}
-                if attr.get("n"):
-                    st.markdown(f"\n**🔍 지표별 귀인 — 어느 지표가 맞았나 (n={attr['n']})**")
-                    st.caption("각 지표 값의 실제 적중률. 낮을수록 그 해석이 자주 틀렸다는 뜻 → 가중치 하향 후보.")
-                    _LBL = {"cvd_bias": "CVD 편향", "oi_quadrant": "OI 사분면",
-                            "div_v2": "RSI 다이버전스", "cvd_div": "CVD 다이버전스",
-                            "obv_div": "OBV 다이버전스", "squeeze": "스퀴즈",
-                            "failed_div": "다이버전스 실패", "regime": "레짐"}
-                    for key, kv in (attr.get("by_indicator") or {}).items():
-                        rows = sorted([(v, d) for v, d in kv.items() if d.get("n")],
-                                      key=lambda x: -(x[1].get("n") or 0))
-                        if not rows:
-                            continue
-                        lines = [f"\n*{_LBL.get(key, key)}*", "| 값 | 적중률 | n |", "|---|---|---|"]
-                        for v, d in rows:
-                            n = d.get("n") or 0
-                            n_disp = f"{n} ⚠️" if n < _MIN_N else f"{n}"
-                            lines.append(f"| {v} | {d.get('win_rate')}% | {n_disp} |")
-                        st.markdown("\n".join(lines))
-            else:
-                st.info("아직 평가된 신호가 없습니다. 호라이즌(예: 1시간봉=24h)이 지나야 평가됩니다.")
-
-            # ── 가중치 조정 제안 (반자동) ──
-            sug = st.session_state.get("_signal_suggestions")
-            if sug:
-                st.markdown("---")
-                st.markdown("**💡 가중치 조정 제안**")
-                if not sug.get("ready"):
-                    st.caption(
-                        f"표본 수집 중 — {sug.get('total', 0)}/{sug.get('min_samples', 20)}건. "
-                        f"{sug.get('needed', 0)}건 더 모이면 제안이 시작됩니다."
-                    )
-                elif not sug.get("suggestions"):
-                    st.caption("✅ 모든 신호가 정상 범위 — 조정 제안 없음.")
-                else:
-                    icon_map = {"high": "🔴", "medium": "🟠", "info": "🟢"}
-                    for s in sug["suggestions"]:
-                        arrow = "⬇️ 하향" if s["direction"] == "DOWN" else "⬆️ 상향"
-                        st.markdown(
-                            f"{icon_map.get(s['severity'], '•')} **{s['target']}** {arrow}  \n"
-                            f"<span style='font-size:12px;color:#9A8B78'>{s['message']}</span>",
-                            unsafe_allow_html=True,
-                        )
-                    st.caption("제안은 참고용입니다. 적용은 직접 판단하세요.")
-        elif stats and stats.get("error"):
-            st.warning(f"통계 오류: {stats['error']}")
-
+        st.markdown("**리스크 설정**")
+        acct = st.number_input("계좌 크기 (USDT)", min_value=0.0,
+                               value=float(st.session_state.account_size), step=100.0)
+        risk = st.number_input("거래당 리스크 (%)", min_value=0.1, max_value=10.0,
+                               value=float(st.session_state.risk_pct), step=0.1)
+        if acct != st.session_state.account_size or risk != st.session_state.risk_pct:
+            st.session_state.account_size = acct
+            st.session_state.risk_pct = risk
+            _persist_config()
 
 # ═══════════════════════════════════════════════
 # 메인 영역
@@ -962,6 +887,93 @@ with st.expander("🔧 종목 직접 입력 / 수정 (자동인식이 안 잡힐
                 st.rerun()
 
 
+# ── 🎯 포지션 추적 + 리스크 계산기 ──
+_pos = sess.get("position")
+
+# 보유 중이면 실시간 PnL 메트릭 표시
+if _pos:
+    try:
+        _cur = _current_price(sess.get("symbol") or "BTCUSDT")
+    except Exception:
+        _cur = None
+    if _cur:
+        _pnl, _to_stop, _to_target = _position_pnl(_pos, _cur)
+        pm1, pm2, pm3, pm4 = st.columns(4)
+        pm1.metric(f"🎯 {_pos['direction']} 진입가", f"{_pos['entry']:,.6g}")
+        pm2.metric("현재가", f"{_cur:,.6g}",
+                   f"{_pnl:+.2f}%" if _pnl is not None else None)
+        pm3.metric("손절까지", f"{_to_stop:+.2f}%" if _to_stop is not None else "-")
+        pm4.metric("목표까지", f"{_to_target:+.2f}%" if _to_target is not None else "-")
+        # 손절 임박/이탈 경고
+        if _pos.get("stop") and _pos.get("entry"):
+            _hit = ((_pos["direction"] == "롱" and _cur <= _pos["stop"]) or
+                    (_pos["direction"] == "숏" and _cur >= _pos["stop"]))
+            _init_dist = abs(_pos["entry"] - _pos["stop"])
+            if _hit:
+                st.error("🚨 현재가가 손절가를 넘었습니다!")
+            elif _init_dist > 0 and abs(_cur - _pos["stop"]) < _init_dist * 0.3:
+                st.warning(f"⚠️ 손절가까지 {_to_stop:+.2f}% — 초기 손절거리의 70% 이상 소진됨")
+
+with st.expander("🎯 포지션 추적 / 리스크 계산기"
+                 + (f" — {_pos['direction']} 보유 중" if _pos else ""),
+                 expanded=False):
+    pc1, pc2, pc3, pc4 = st.columns([0.8, 1.2, 1.2, 1.2])
+    with pc1:
+        _dir = st.selectbox("방향", ["롱", "숏"],
+                            index=0 if not _pos or _pos.get("direction") == "롱" else 1,
+                            key=f"pos_dir_{sess['id']}")
+    with pc2:
+        _entry = st.number_input("진입가", min_value=0.0, format="%.6f",
+                                 value=float((_pos or {}).get("entry") or 0),
+                                 key=f"pos_entry_{sess['id']}")
+    with pc3:
+        _stop = st.number_input("손절가", min_value=0.0, format="%.6f",
+                                value=float((_pos or {}).get("stop") or 0),
+                                key=f"pos_stop_{sess['id']}")
+    with pc4:
+        _target = st.number_input("목표가", min_value=0.0, format="%.6f",
+                                  value=float((_pos or {}).get("target") or 0),
+                                  key=f"pos_target_{sess['id']}")
+
+    # 리스크 계산기 — 계좌×리스크% ÷ 손절거리 = 권장 사이즈
+    if _entry > 0 and _stop > 0 and _entry != _stop:
+        _stop_dist = abs(_entry - _stop) / _entry * 100
+        _rr_txt = ""
+        if _target > 0:
+            _r = abs(_target - _entry) / abs(_entry - _stop)
+            _rr_txt = f" · 손익비 {_r:.2f}R"
+        if st.session_state.account_size > 0:
+            _risk_amt = st.session_state.account_size * st.session_state.risk_pct / 100
+            _notional = _risk_amt / (_stop_dist / 100)
+            _qty = _notional / _entry
+            st.info(f"📐 손절거리 {_stop_dist:.2f}%{_rr_txt} · "
+                    f"리스크 {_risk_amt:,.1f} USDT({st.session_state.risk_pct}%) → "
+                    f"권장 포지션 **{_notional:,.0f} USDT** (수량 ≈ {_qty:.6g}, "
+                    f"계좌 대비 {_notional / st.session_state.account_size:.1f}x)")
+        else:
+            st.caption(f"📐 손절거리 {_stop_dist:.2f}%{_rr_txt} — "
+                       f"⚙️ 설정에서 계좌 크기를 입력하면 권장 사이즈를 계산합니다.")
+
+    pb1, pb2 = st.columns(2)
+    with pb1:
+        if st.button("💾 포지션 저장", key=f"pos_save_{sess['id']}", use_container_width=True):
+            if _entry > 0:
+                sess["position"] = {
+                    "direction": _dir, "entry": _entry,
+                    "stop": _stop or None, "target": _target or None,
+                    "opened_at": datetime.now().isoformat(),
+                }
+                _safe_save_session(sess)
+                st.rerun()
+            else:
+                st.toast("⚠️ 진입가를 입력하세요")
+    with pb2:
+        if _pos and st.button("✖ 포지션 해제", key=f"pos_clear_{sess['id']}", use_container_width=True):
+            sess.pop("position", None)
+            _safe_save_session(sess)
+            st.rerun()
+
+
 # 퀵 분석 프롬프트 → 짧은 표시 매핑
 _PROMPT_DISPLAY_MAP = {
     "[종합 차트 분석]": "📊 종합 차트 분석",
@@ -1106,8 +1118,8 @@ if pending_rsi_wave and _active_api_key():
     tf_cards = generate_tf_cards(rsi_results)
     summary_text = generate_summary_text(rsi_results)
 
-    # AI용 데이터 포맷팅
-    ai_prompt_text = format_rsi_wave_for_ai(symbol, rsi_results)
+    # AI용 데이터 포맷팅 (+보유 포지션 컨텍스트)
+    ai_prompt_text = format_rsi_wave_for_ai(symbol, rsi_results) + _position_context(sess)
 
     # AI 분석 스트리밍
     with st.chat_message("assistant", avatar="🤖"):
@@ -1229,6 +1241,9 @@ if prompt:
         tf_label = " / ".join(requested_tfs)
         with st.spinner(f"📊 데이터 수집 중 ({tf_label})..."):
             market_data = get_multi_timeframe_context(symbol, requested_tfs, interval)
+
+        # 보유 포지션이 있으면 AI 컨텍스트에 자동 주입
+        market_data = market_data + _position_context(sess)
 
         # AI에 보낼 이미지 (첫 번째 이미지 또는 없음)
         primary_b64 = all_images[0][1] if all_images else None

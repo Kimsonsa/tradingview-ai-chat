@@ -2008,6 +2008,240 @@ def apply_htf_filter(results):
 # 핵심 분석 함수
 # ═══════════════════════════════════════════════
 
+def analyze_tf_snapshot(tf_label, candles, funding_info=None, funding_analysis=None, oi_series=None):
+    """단일 TF 캔들 → RSI 사이클 판정 결과 (네트워크 fetch 없음).
+
+    analyze_rsi_wave 의 TF별 분석 본체. 캔들만 주면 동작하므로
+    백테스트(과거 슬라이스)와 워치리스트 대시보드가 그대로 재사용한다.
+    funding/OI 는 선택 — 없으면 해당 분석만 생략된다.
+    """
+    closes = [c["close"] for c in candles]
+    volumes = [c["volume"] for c in candles]
+    last = candles[-1]
+    cur = last["close"]
+
+    # ── RSI ──
+    rsi_vals = calc_rsi(closes)
+    cur_rsi = rsi_vals[-1] if rsi_vals else 50
+    prev_rsi = rsi_vals[-2] if len(rsi_vals) >= 2 else cur_rsi
+
+    # ── EMA ──
+    ema20_vals = calc_ema(closes, 20)
+    e20 = ema20_vals[-1]
+    e50 = calc_ema(closes, 50)[-1]
+    e200 = calc_ema(closes, 200)[-1]
+
+    # EMA20 기울기 (최근 5봉, % 변화)
+    if len(ema20_vals) >= 6:
+        ema20_slope = (ema20_vals[-1] - ema20_vals[-6]) / ema20_vals[-6] * 100 if ema20_vals[-6] != 0 else 0
+    else:
+        ema20_slope = 0
+
+    if cur > e20 > e50 > e200:
+        ema_trend = "강한 상승 정배열 ↑"
+    elif cur > e20 > e50:
+        ema_trend = "상승 추세 ↑"
+    elif cur < e20 < e50 < e200:
+        ema_trend = "강한 하락 역배열 ↓"
+    elif cur < e20 < e50:
+        ema_trend = "하락 추세 ↓"
+    else:
+        ema_trend = "횡보/혼조 ↔"
+
+    # ── MACD ──
+    macd, macd_sig, macd_hist = calc_macd(closes)
+
+    # ── 볼린저밴드 ──
+    bb_upper, bb_mid, bb_lower, bb_bw = calc_bollinger(closes)
+
+    # ── StochRSI ──
+    stoch_k, stoch_d = calc_stoch_rsi(closes)
+
+    # ── ATR ──
+    atr = calc_atr(candles)
+    atr_pct = round(atr / cur * 100, 2) if atr and cur else 0
+
+    # ── ADX ──
+    adx, plus_di, minus_di = calc_adx(candles)
+
+    # ── OBV (시계열 포함) ──
+    obv, obv_ema, obv_series = calc_obv(candles, return_series=True)
+
+    # ── CVD (시계열 포함) ──
+    cvd, cvd_ema, cvd_series = calc_cvd(candles, return_series=True)
+
+    # ── VWAP ──
+    vwap = calc_vwap(candles)
+
+    # ── 거래량 ──
+    avg_vol5 = np.mean(volumes[-6:-1]) if len(volumes) >= 6 else volumes[-1]
+    vol_ratio = int(last["volume"] / avg_vol5 * 100) if avg_vol5 > 0 else 100
+
+    # ════════════════════════════════════
+    # NEW: 시장 레짐 판정
+    # ════════════════════════════════════
+    regime = determine_market_regime(
+        cur, e20, e50, vwap, adx, plus_di, minus_di, bb_bw, ema20_slope
+    )
+    regime_params = get_regime_rsi_params(regime)
+
+    # ── 사이클 판정 (레짐 반영) ──
+    cycle_pos, cycle_desc = determine_cycle_position(
+        cur_rsi, prev_rsi, adx, ema_trend, regime
+    )
+    arrow_dir, borderline = determine_arrow_direction(rsi_vals)
+
+    # ── 다이버전스 (v2 + 기존 호환) ──
+    div_type = detect_divergence(closes, rsi_vals)
+    div_v2 = detect_divergence_v2(closes, rsi_vals)
+
+    # ── RSI 회복 강도 ──
+    rsi_recovery = calc_rsi_recovery_strength(rsi_vals)
+
+    # ── 거래량 패턴 ──
+    vol_pattern = analyze_volume_pattern(candles)
+
+    # ── 거래량 다이버전스 (NEW) ──
+    vol_div = detect_volume_divergence(closes, volumes)
+
+    # ── OBV 다이버전스 (NEW) ──
+    obv_div = detect_obv_divergence(closes, obv_series) if obv_series else None
+
+    # ── CVD 다이버전스 (NEW) ──
+    cvd_div = detect_cvd_divergence(closes, cvd_series) if cvd_series else None
+
+    # ── OI 변화 (인자로 받은 시계열 — 없으면 생략) ──
+    oi_analysis = analyze_oi_change(closes, oi_series) if oi_series else None
+
+    # ── 베어 플래그 ──
+    bear_flag = detect_bear_flag(candles, rsi_vals, atr, e20, vwap)
+
+    # ── 스퀴즈 확장 감지 (BB 이탈 + 거래량 폭발) ──
+    squeeze_expansion = detect_squeeze_expansion(
+        cur, cur_rsi, bb_upper, bb_lower, vwap,
+        e20, e50, e200, vol_ratio, macd_hist, minus_di, plus_di
+    )
+
+    # 스퀴즈 확장 시 레짐 오버라이드
+    if squeeze_expansion:
+        if squeeze_expansion["type"] == "BEARISH_EXPANSION":
+            regime = "DOWN_TREND"
+            regime_params = get_regime_rsi_params(regime)
+        elif squeeze_expansion["type"] == "BULLISH_EXPANSION":
+            regime = "UP_TREND"
+            regime_params = get_regime_rsi_params(regime)
+        # 사이클 재판정 (레짐 변경 반영)
+        cycle_pos, cycle_desc = determine_cycle_position(
+            cur_rsi, prev_rsi, adx, ema_trend, regime
+        )
+
+    # ── 다이버전스 확정/실패 평가 ──
+    div_status = None
+    if div_v2:
+        div_status = evaluate_divergence_confirmation(
+            div_v2, cur, e20, vwap, cur_rsi, macd_hist, regime
+        )
+
+    # ── 실패한 상승 다이버전스 ──
+    failed_div = None
+    if (div_v2 and div_v2["type"] == "BULL_DIV_CANDIDATE"
+            and div_status == "UNCONFIRMED"):
+        failed_div = detect_failed_bull_div(
+            div_v2, rsi_recovery, cur, e20, vwap, closes
+        )
+
+    # ── 추세장/횡보장 판별 (기존 호환 + 레짐 연동) ──
+    if adx is not None and adx >= 25:
+        market_type = "추세장"
+        rsi_strategy_valid = "⚠️ RSI 사이클 신뢰도 낮음"
+    elif adx is not None and adx < 20:
+        market_type = "횡보장"
+        rsi_strategy_valid = "✅ RSI 사이클 전략 유효"
+    else:
+        market_type = "약추세"
+        rsi_strategy_valid = "🟡 RSI 사이클 보통"
+
+    # ── 목표가 산출 ──
+    targets = calc_regime_targets(
+        regime, cur, e20, e50, vwap, bb_upper, bb_mid, bb_lower
+    )
+
+    # ── 최근 스윙 고저 (실제 S/R 레벨) ──
+    recent_high = max(c["high"] for c in candles[-30:])
+    recent_low = min(c["low"] for c in candles[-30:])
+
+    r = {
+        # 기존 필드 (호환 유지)
+        "price": cur,
+        "recent_high": round(recent_high, 2),
+        "recent_low": round(recent_low, 2),
+        "rsi": cur_rsi,
+        "prev_rsi": prev_rsi,
+        "ema20": e20,
+        "ema50": e50,
+        "ema200": e200,
+        "ema_trend": ema_trend,
+        "macd": macd,
+        "macd_sig": macd_sig,
+        "macd_hist": macd_hist,
+        "bb_upper": bb_upper,
+        "bb_mid": bb_mid,
+        "bb_lower": bb_lower,
+        "bb_bw": bb_bw,
+        "stoch_k": stoch_k,
+        "stoch_d": stoch_d,
+        "atr": atr,
+        "atr_pct": atr_pct,
+        "adx": adx,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "obv": obv,
+        "obv_ema": obv_ema,
+        "cvd": cvd,
+        "cvd_ema": cvd_ema,
+        "vwap": vwap,
+        "vol_ratio": vol_ratio,
+        "cycle_pos": cycle_pos,
+        "cycle_desc": cycle_desc,
+        "arrow_dir": arrow_dir,
+        "borderline": borderline,
+        "divergence": div_type,
+        "market_type": market_type,
+        "rsi_strategy_valid": rsi_strategy_valid,
+        # ── v2 새 필드 ──
+        "regime": regime,
+        "regime_params": regime_params,
+        "div_v2": div_v2,
+        "div_status": div_status,
+        "failed_div": failed_div,
+        "rsi_recovery": rsi_recovery,
+        "vol_pattern": vol_pattern,
+        "bear_flag": bear_flag,
+        "squeeze_expansion": squeeze_expansion,
+        "targets": targets,
+        "ema20_slope": round(ema20_slope, 3),
+        # ── v3 거래량/OBV/CVD 다이버전스 ──
+        "vol_div": vol_div,
+        "obv_div": obv_div,
+        "cvd_div": cvd_div,
+        "synth_div": synthesize_divergence(div_v2, vol_div, obv_div, cvd_div),
+        # ── v4 OI / 펀딩 ──
+        "oi_analysis": oi_analysis,
+        "funding_analysis": funding_analysis,
+        "funding_info": funding_info,
+    }
+
+    # 포지션 판정 (v2 점수 모델)
+    pos_result = determine_position(r)
+    r["position"] = pos_result["position"]
+    r["confidence"] = pos_result["confidence"]
+    r["long_score"] = pos_result["long_score"]
+    r["short_score"] = pos_result["short_score"]
+    r["signal_type"] = pos_result["signal_type"]
+
+    return r
+
+
 def analyze_rsi_wave(symbol="BTCUSDT"):
     """7개 타임프레임 데이터 수집 → RSI 사이클 분석 결과 반환 (v2)
 
@@ -2052,239 +2286,18 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
     funding_analysis = analyze_funding(funding_info)
 
     for tf_label in WAVE_TIMEFRAMES:
-        bi = INTERVAL_MAP.get(tf_label)
-        if not bi:
+        if not INTERVAL_MAP.get(tf_label):
             continue
 
         try:
             if tf_label in kline_err:
                 raise kline_err[tf_label]
-            candles = kline_data[tf_label]
-            closes = [c["close"] for c in candles]
-            volumes = [c["volume"] for c in candles]
-            last = candles[-1]
-            cur = last["close"]
-
-            # ── RSI ──
-            rsi_vals = calc_rsi(closes)
-            cur_rsi = rsi_vals[-1] if rsi_vals else 50
-            prev_rsi = rsi_vals[-2] if len(rsi_vals) >= 2 else cur_rsi
-
-            # ── EMA ──
-            ema20_vals = calc_ema(closes, 20)
-            e20 = ema20_vals[-1]
-            e50 = calc_ema(closes, 50)[-1]
-            e200 = calc_ema(closes, 200)[-1]
-
-            # EMA20 기울기 (최근 5봉, % 변화)
-            if len(ema20_vals) >= 6:
-                ema20_slope = (ema20_vals[-1] - ema20_vals[-6]) / ema20_vals[-6] * 100 if ema20_vals[-6] != 0 else 0
-            else:
-                ema20_slope = 0
-
-            if cur > e20 > e50 > e200:
-                ema_trend = "강한 상승 정배열 ↑"
-            elif cur > e20 > e50:
-                ema_trend = "상승 추세 ↑"
-            elif cur < e20 < e50 < e200:
-                ema_trend = "강한 하락 역배열 ↓"
-            elif cur < e20 < e50:
-                ema_trend = "하락 추세 ↓"
-            else:
-                ema_trend = "횡보/혼조 ↔"
-
-            # ── MACD ──
-            macd, macd_sig, macd_hist = calc_macd(closes)
-
-            # ── 볼린저밴드 ──
-            bb_upper, bb_mid, bb_lower, bb_bw = calc_bollinger(closes)
-
-            # ── StochRSI ──
-            stoch_k, stoch_d = calc_stoch_rsi(closes)
-
-            # ── ATR ──
-            atr = calc_atr(candles)
-            atr_pct = round(atr / cur * 100, 2) if atr and cur else 0
-
-            # ── ADX ──
-            adx, plus_di, minus_di = calc_adx(candles)
-
-            # ── OBV (시계열 포함) ──
-            obv, obv_ema, obv_series = calc_obv(candles, return_series=True)
-
-            # ── CVD (시계열 포함) ──
-            cvd, cvd_ema, cvd_series = calc_cvd(candles, return_series=True)
-
-            # ── VWAP ──
-            vwap = calc_vwap(candles)
-
-            # ── 거래량 ──
-            avg_vol5 = np.mean(volumes[-6:-1]) if len(volumes) >= 6 else volumes[-1]
-            vol_ratio = int(last["volume"] / avg_vol5 * 100) if avg_vol5 > 0 else 100
-
-            # ════════════════════════════════════
-            # NEW: 시장 레짐 판정
-            # ════════════════════════════════════
-            regime = determine_market_regime(
-                cur, e20, e50, vwap, adx, plus_di, minus_di, bb_bw, ema20_slope
+            results[tf_label] = analyze_tf_snapshot(
+                tf_label, kline_data[tf_label],
+                funding_info=funding_info,
+                funding_analysis=funding_analysis,
+                oi_series=oi_data.get(tf_label),
             )
-            regime_params = get_regime_rsi_params(regime)
-
-            # ── 사이클 판정 (레짐 반영) ──
-            cycle_pos, cycle_desc = determine_cycle_position(
-                cur_rsi, prev_rsi, adx, ema_trend, regime
-            )
-            arrow_dir, borderline = determine_arrow_direction(rsi_vals)
-
-            # ── 다이버전스 (v2 + 기존 호환) ──
-            div_type = detect_divergence(closes, rsi_vals)
-            div_v2 = detect_divergence_v2(closes, rsi_vals)
-
-            # ── RSI 회복 강도 ──
-            rsi_recovery = calc_rsi_recovery_strength(rsi_vals)
-
-            # ── 거래량 패턴 ──
-            vol_pattern = analyze_volume_pattern(candles)
-
-            # ── 거래량 다이버전스 (NEW) ──
-            vol_div = detect_volume_divergence(closes, volumes)
-
-            # ── OBV 다이버전스 (NEW) ──
-            obv_div = detect_obv_divergence(closes, obv_series) if obv_series else None
-
-            # ── CVD 다이버전스 (NEW) ──
-            cvd_div = detect_cvd_divergence(closes, cvd_series) if cvd_series else None
-
-            # ── OI 변화 (NEW — 프리페치된 매칭 period 데이터 사용) ──
-            oi_series = oi_data.get(tf_label)
-            oi_analysis = analyze_oi_change(closes, oi_series) if oi_series else None
-
-            # ── 베어 플래그 ──
-            bear_flag = detect_bear_flag(candles, rsi_vals, atr, e20, vwap)
-
-            # ── 스퀴즈 확장 감지 (BB 이탈 + 거래량 폭발) ──
-            squeeze_expansion = detect_squeeze_expansion(
-                cur, cur_rsi, bb_upper, bb_lower, vwap,
-                e20, e50, e200, vol_ratio, macd_hist, minus_di, plus_di
-            )
-
-            # 스퀴즈 확장 시 레짐 오버라이드
-            if squeeze_expansion:
-                if squeeze_expansion["type"] == "BEARISH_EXPANSION":
-                    regime = "DOWN_TREND"
-                    regime_params = get_regime_rsi_params(regime)
-                elif squeeze_expansion["type"] == "BULLISH_EXPANSION":
-                    regime = "UP_TREND"
-                    regime_params = get_regime_rsi_params(regime)
-                # 사이클 재판정 (레짐 변경 반영)
-                cycle_pos, cycle_desc = determine_cycle_position(
-                    cur_rsi, prev_rsi, adx, ema_trend, regime
-                )
-
-            # ── 다이버전스 확정/실패 평가 ──
-            div_status = None
-            if div_v2:
-                div_status = evaluate_divergence_confirmation(
-                    div_v2, cur, e20, vwap, cur_rsi, macd_hist, regime
-                )
-
-            # ── 실패한 상승 다이버전스 ──
-            failed_div = None
-            if (div_v2 and div_v2["type"] == "BULL_DIV_CANDIDATE"
-                    and div_status == "UNCONFIRMED"):
-                failed_div = detect_failed_bull_div(
-                    div_v2, rsi_recovery, cur, e20, vwap, closes
-                )
-
-            # ── 추세장/횡보장 판별 (기존 호환 + 레짐 연동) ──
-            if adx is not None and adx >= 25:
-                market_type = "추세장"
-                rsi_strategy_valid = "⚠️ RSI 사이클 신뢰도 낮음"
-            elif adx is not None and adx < 20:
-                market_type = "횡보장"
-                rsi_strategy_valid = "✅ RSI 사이클 전략 유효"
-            else:
-                market_type = "약추세"
-                rsi_strategy_valid = "🟡 RSI 사이클 보통"
-
-            # ── 목표가 산출 ──
-            targets = calc_regime_targets(
-                regime, cur, e20, e50, vwap, bb_upper, bb_mid, bb_lower
-            )
-
-            # ── 최근 스윙 고저 (실제 S/R 레벨) ──
-            recent_high = max(c["high"] for c in candles[-30:])
-            recent_low = min(c["low"] for c in candles[-30:])
-
-            results[tf_label] = {
-                # 기존 필드 (호환 유지)
-                "price": cur,
-                "recent_high": round(recent_high, 2),
-                "recent_low": round(recent_low, 2),
-                "rsi": cur_rsi,
-                "prev_rsi": prev_rsi,
-                "ema20": e20,
-                "ema50": e50,
-                "ema200": e200,
-                "ema_trend": ema_trend,
-                "macd": macd,
-                "macd_sig": macd_sig,
-                "macd_hist": macd_hist,
-                "bb_upper": bb_upper,
-                "bb_mid": bb_mid,
-                "bb_lower": bb_lower,
-                "bb_bw": bb_bw,
-                "stoch_k": stoch_k,
-                "stoch_d": stoch_d,
-                "atr": atr,
-                "atr_pct": atr_pct,
-                "adx": adx,
-                "plus_di": plus_di,
-                "minus_di": minus_di,
-                "obv": obv,
-                "obv_ema": obv_ema,
-                "cvd": cvd,
-                "cvd_ema": cvd_ema,
-                "vwap": vwap,
-                "vol_ratio": vol_ratio,
-                "cycle_pos": cycle_pos,
-                "cycle_desc": cycle_desc,
-                "arrow_dir": arrow_dir,
-                "borderline": borderline,
-                "divergence": div_type,
-                "market_type": market_type,
-                "rsi_strategy_valid": rsi_strategy_valid,
-                # ── v2 새 필드 ──
-                "regime": regime,
-                "regime_params": regime_params,
-                "div_v2": div_v2,
-                "div_status": div_status,
-                "failed_div": failed_div,
-                "rsi_recovery": rsi_recovery,
-                "vol_pattern": vol_pattern,
-                "bear_flag": bear_flag,
-                "squeeze_expansion": squeeze_expansion,
-                "targets": targets,
-                "ema20_slope": round(ema20_slope, 3),
-                # ── v3 거래량/OBV/CVD 다이버전스 ──
-                "vol_div": vol_div,
-                "obv_div": obv_div,
-                "cvd_div": cvd_div,
-                "synth_div": synthesize_divergence(div_v2, vol_div, obv_div, cvd_div),
-                # ── v4 OI / 펀딩 ──
-                "oi_analysis": oi_analysis,
-                "funding_analysis": funding_analysis,
-                "funding_info": funding_info,
-            }
-
-            # 포지션 판정 (v2 점수 모델)
-            pos_result = determine_position(results[tf_label])
-            results[tf_label]["position"] = pos_result["position"]
-            results[tf_label]["confidence"] = pos_result["confidence"]
-            results[tf_label]["long_score"] = pos_result["long_score"]
-            results[tf_label]["short_score"] = pos_result["short_score"]
-            results[tf_label]["signal_type"] = pos_result["signal_type"]
-
         except Exception as e:
             results[tf_label] = {"error": str(e)}
 
