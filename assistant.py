@@ -375,6 +375,10 @@ if "auto_capture" not in st.session_state:
 if "pending_captures" not in st.session_state:
     st.session_state.pending_captures = []  # [(img, b64, label), ...]
 
+# 직전 run에서 답변이 완료됐으면 알림 (rerun 직전 토스트는 사라지므로 플래그로 전달)
+if st.session_state.pop("_toast_done", False):
+    st.toast("✅ 답변 완료", icon="✅")
+
 # 다중 탭: tabs = { tab_id: { session_data } }
 if "tabs" not in st.session_state:
     st.session_state.tabs = {}
@@ -516,6 +520,21 @@ def _close_position(sess):
         list(st.session_state.tabs.keys())[0] if st.session_state.tabs else None
     )
     st.rerun()
+
+
+def _scroll_chat_bottom():
+    """채팅 하단으로 자동 스크롤 — 긴 대화에서 새 메시지/답변이 화면 밖에
+    그려져 '아무 반응 없음'처럼 보이는 문제 해결"""
+    components.html(
+        """<script>
+        const doc = window.parent.document;
+        const el = doc.querySelector('section[data-testid="stMain"]')
+                || doc.querySelector('[data-testid="stAppViewContainer"]')
+                || doc.querySelector('section.main');
+        if (el) { el.scrollTo({top: el.scrollHeight, behavior: 'smooth'}); }
+        </script>""",
+        height=0,
+    )
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -1099,6 +1118,8 @@ if pending_rsi_wave and _active_api_key():
     sess["messages"].append({"role": "user", "content": user_prompt})
     with st.chat_message("user", avatar="👤"):
         st.markdown(user_prompt)
+    st.toast("🌊 RSI 파동 분석 시작 — 데이터 수집 중", icon="🤖")
+    _scroll_chat_bottom()
 
     # 데이터 수집 + 분석
     tf_label = " / ".join(WAVE_TIMEFRAMES)
@@ -1164,6 +1185,7 @@ if pending_rsi_wave and _active_api_key():
         "rsi_wave_html": combined_html,
     })
     _safe_save_session(sess)
+    st.session_state["_toast_done"] = True
     st.rerun()
 
 elif pending_rsi_wave and not _active_api_key():
@@ -1216,6 +1238,10 @@ if prompt:
                     cap_label = item[2]
                     with img_cols[ii % len(img_cols)]:
                         st.image(cap_img, caption=cap_label, use_container_width=True)
+
+        # 진행 피드백 — 화면 위치와 무관하게 보이는 토스트 + 하단 스크롤
+        st.toast("📨 질문 접수 — 데이터 수집 후 답변을 생성합니다", icon="🤖")
+        _scroll_chat_bottom()
 
         # 실시간 데이터 수집
         symbol = sess.get("symbol", "BTCUSDT")
@@ -1285,4 +1311,5 @@ if prompt:
             "image": primary_img,
         })
         _safe_save_session(sess)
+        st.session_state["_toast_done"] = True
         st.rerun()
