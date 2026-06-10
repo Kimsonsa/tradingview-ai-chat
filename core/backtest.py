@@ -119,6 +119,13 @@ def run_backtest(symbol, tf_label, total_bars=2000, dedupe=True, progress_cb=Non
             "mae_pct": mae,
             "return_pct": ret,
             "outcome": outcome,
+            # 컨플루언스 게이트/시나리오 시뮬용 추가 필드
+            "atr": r.get("atr"),
+            "obv_div": (r.get("obv_div") or {}).get("type"),
+            "cvd_div": (r.get("cvd_div") or {}).get("type"),
+            "div_v2": (r.get("div_v2") or {}).get("type"),
+            "squeeze": (r.get("squeeze_expansion") or {}).get("type"),
+            "_i": i,  # candles 내 신호 봉 인덱스
         })
 
     if progress_cb:
@@ -143,7 +150,93 @@ def run_backtest(symbol, tf_label, total_bars=2000, dedupe=True, progress_cb=Non
         "by_position": _group_agg(rows, "position"),
         "by_confidence": _group_agg(rows, "confidence"),
         "signals": rows,
+        "candles": candles,  # 시나리오 청산 시뮬용
     }
+
+
+# ═══════════════════════════════════════════════
+# 컨플루언스 게이트 — 측정된 고승률 조각(주문흐름 동의)만 통과
+# ═══════════════════════════════════════════════
+
+def _flow_agree_one(r):
+    """OBV 또는 CVD 다이버전스가 신호 방향에 동의"""
+    if r["position"] == "롱":
+        return r.get("obv_div") == "OBV_BULL_DIV" or r.get("cvd_div") == "CVD_BULL_DIV"
+    if r["position"] == "숏":
+        return r.get("obv_div") == "OBV_BEAR_DIV" or r.get("cvd_div") == "CVD_BEAR_DIV"
+    return False
+
+
+def _flow_agree_both(r):
+    """OBV와 CVD 다이버전스가 모두 신호 방향에 동의"""
+    if r["position"] == "롱":
+        return r.get("obv_div") == "OBV_BULL_DIV" and r.get("cvd_div") == "CVD_BULL_DIV"
+    if r["position"] == "숏":
+        return r.get("obv_div") == "OBV_BEAR_DIV" and r.get("cvd_div") == "CVD_BEAR_DIV"
+    return False
+
+
+def _regime_ok(r):
+    """신호 방향이 레짐과 정면충돌하지 않음"""
+    if r["position"] == "롱":
+        return r.get("regime") not in ("DOWN_TREND", "DOWN_BIAS")
+    if r["position"] == "숏":
+        return r.get("regime") not in ("UP_TREND", "UP_BIAS")
+    return True
+
+
+GATES = {
+    "없음": lambda r: True,
+    "주문흐름 동의(OBV/CVD 중 1)": _flow_agree_one,
+    "주문흐름 강동의(둘 다)": _flow_agree_both,
+    "주문흐름 동의 + 레짐 비충돌": lambda r: _flow_agree_one(r) and _regime_ok(r),
+}
+
+
+# ═══════════════════════════════════════════════
+# 시나리오 청산 시뮬 — 손절/목표 중 먼저 닿는 쪽 (호라이즌 보유와 대비)
+# ═══════════════════════════════════════════════
+
+def simulate_scenario_exits(candles, rows, stop_atr=1.0, target_ratio=1.0,
+                            max_bars=96, fee_pct=FEE_PCT):
+    """각 신호에 손절·목표 기반 청산을 시뮬레이션한 새 행 리스트 반환.
+
+    진입: 신호 봉 종가. 손절: ATR×stop_atr, 목표: 손절거리×target_ratio.
+    같은 봉에서 둘 다 닿으면 보수적으로 손절 처리. max_bars 안에 둘 다
+    못 닿으면 마지막 종가로 정산. return_pct는 수수료 차감 전(gross),
+    집계(_agg)에서 fee_pct 차감 지표가 함께 계산된다.
+    """
+    out = []
+    for r in rows:
+        i = r.get("_i")
+        atr = r.get("atr") or 0
+        if i is None or atr <= 0 or r["position"] not in ("롱", "숏"):
+            continue
+        entry = r["price"]
+        stop_d = atr * stop_atr
+        tgt_d = stop_d * target_ratio
+        is_long = r["position"] == "롱"
+        stop = entry - stop_d if is_long else entry + stop_d
+        tgt = entry + tgt_d if is_long else entry - tgt_d
+
+        end = min(len(candles), i + 1 + max_bars)
+        outcome, ret = None, None
+        for c in candles[i + 1:end]:
+            hit_stop = (c["low"] <= stop) if is_long else (c["high"] >= stop)
+            hit_tgt = (c["high"] >= tgt) if is_long else (c["low"] <= tgt)
+            if hit_stop:  # 동시 도달 시 손절 우선 (보수적)
+                outcome, ret = "LOSS", -stop_d / entry * 100
+                break
+            if hit_tgt:
+                outcome, ret = "WIN", tgt_d / entry * 100
+                break
+        if outcome is None:  # 만기 정산
+            close = candles[end - 1]["close"]
+            ret = ((close - entry) if is_long else (entry - close)) / entry * 100
+            outcome = "WIN" if ret > 0 else "LOSS"
+        out.append({**r, "outcome": outcome, "return_pct": round(ret, 3),
+                    "exit_mode": "scenario"})
+    return out
 
 
 def verdict_table(by_signal_type, min_n=10):
