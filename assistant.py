@@ -11,7 +11,7 @@ from core.market_data import get_market_context, get_multi_timeframe_context, pa
 from core.ai_client import analyze_chart, analyze_trade_summary, is_claude_model, CLAUDE_MODELS
 from core.rsi_wave import (
     analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
-    RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
+    format_machine_context, RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
 )
 from core.rsi_render import (
     generate_wave_svg, generate_price_ladder_svg, generate_tf_cards,
@@ -544,6 +544,16 @@ def _current_price(symbol):
     return fetch_klines(symbol, "1m", 2)[-1]["close"]
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _machine_context(symbol):
+    """기계 판정 스냅샷 (60초 캐시) — 캡쳐 채팅/지지저항/자유 질문 모두
+    RSI 파동 엔진과 같은 기준(레짐·게이트·바텀라인·레벨 맵) 위에서 답하게 한다."""
+    try:
+        return format_machine_context(symbol, analyze_rsi_wave(symbol))
+    except Exception:
+        return ""
+
+
 def _position_pnl(p, cur):
     """포지션 dict + 현재가 → (PnL%, 손절까지%, 목표까지%)"""
     entry = p.get("entry")
@@ -1057,7 +1067,10 @@ _QUICK_ITEMS = [
 최종 정리:
 - 강한 지지 구간 TOP 3
 - 강한 저항 구간 TOP 3
-- 현재가 기준 가장 가까운 지지/저항"""),
+- 현재가 기준 가장 가까운 지지/저항
+
+주의: 함께 제공되는 '기계 판정 스냅샷'의 핵심 레벨 맵과 정합성을 유지하고,
+각 레벨이 어떤 컨플루언스(EMA/VWAP/BB/최근 고저)에서 나왔는지 표기할 것."""),
 ]
 
 # 🌊 RSI 파동 분석 버튼
@@ -1273,8 +1286,9 @@ if prompt:
         with st.spinner(f"📊 데이터 수집 중 ({tf_label})..."):
             market_data = get_multi_timeframe_context(symbol, requested_tfs, interval)
 
-        # 보유 포지션이 있으면 AI 컨텍스트에 자동 주입
-        market_data = market_data + _position_context(sess)
+        # 기계 판정 스냅샷(레짐·게이트·레벨 맵) + 보유 포지션 — 모든 대화의 공통 기준
+        with st.spinner("🤖 기계 판정 동기화 중..."):
+            market_data = market_data + _machine_context(symbol) + _position_context(sess)
 
         # AI에 보낼 이미지 (첫 번째 이미지 또는 없음)
         primary_b64 = all_images[0][1] if all_images else None

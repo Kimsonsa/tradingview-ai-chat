@@ -317,6 +317,12 @@ def run_chat(session_id, prompt, symbol):
         market_data = get_multi_timeframe_context(sym, tfs, interval)
     except Exception:
         market_data = ""
+    # 기계 판정 스냅샷 — PC 채팅과 동일한 공통 기준(레짐·게이트·레벨 맵) 주입
+    try:
+        from core.rsi_wave import format_machine_context
+        market_data += format_machine_context(sym, analyze_rsi_wave(sym))
+    except Exception:
+        pass
 
     try:
         resp = "".join(analyze_chart(

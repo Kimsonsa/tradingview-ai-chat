@@ -2894,6 +2894,55 @@ def generate_summary_text(results):
     return "\n".join(lines)
 
 
+def format_machine_context(symbol, results):
+    """기계 판정 스냅샷 — 일반 채팅/캡쳐 분석에 주입하는 공통 기준 블록.
+
+    RSI 파동 버튼을 누르지 않은 대화에서도 AI가 같은 기계 판단
+    (레짐·게이트·바텀라인·레벨 맵) 위에서 답하도록 한다. 압축 포맷(~20줄).
+    """
+    lines = [f"🤖 기계 판정 스냅샷 ({symbol} — RSI 파동 엔진, 이 대화의 공통 기준)"]
+
+    # TF 상태 한 줄씩 (핵심 TF만)
+    tf_parts = []
+    for tf in ("15분", "1시간", "4시간", "1일"):
+        r = results.get(tf)
+        if not r or r.get("error"):
+            continue
+        g = flow_gate(r)
+        gate_txt = " 게이트✅" if g == "AGREE" else (" 게이트✖" if g == "DISAGREE" else "")
+        tf_parts.append(f"{tf} {r.get('position')}:{r.get('confidence')}/"
+                        f"{REGIME_LABELS.get(r.get('regime'), r.get('regime'))}{gate_txt}")
+    if tf_parts:
+        lines.append("- TF 판정: " + " · ".join(tf_parts))
+
+    ea = assess_entry(results)
+    if ea:
+        lines.append(f"- 방향: {ea['direction']} (방향성 {ea['direction_score']}/100, "
+                     f"즉시진입 {ea['entry_score']}/100, 추격 {'가능' if ea['chase_ok'] else '부적합'})"
+                     f" · 권장 사이즈 {ea['position_size']} · 리스크 {ea['risk_level']}")
+
+    # 15분 게이트 — 검증 조건
+    r15 = results.get("15분") or {}
+    g15 = flow_gate(r15)
+    if g15 == "AGREE":
+        lines.append(f"- 검증 조건: 15분 {r15.get('position')} 게이트 ✅ — 백테스트 검증 조합 "
+                     "(0.5R 스캘프 검증 승률 71~75%)")
+    elif g15 == "DISAGREE":
+        lines.append(f"- 검증 조건: 15분 {r15.get('position')} 게이트 ✖ — 검증 조건 미충족, "
+                     "이 신호 단독 진입 비권장")
+
+    # 핵심 레벨 (컨플루언스 레벨 맵 상하 3개씩)
+    lm = build_level_map(results)
+    if lm:
+        above = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["above"][:3])
+        below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
+        lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
+
+    lines.append("※ 지지/저항·레벨 질문에는 위 레벨 맵과 정합성을 유지하고, 진입 판단은 위 기계 판정을 "
+                 "1차 기준으로 삼아 답하라. 다른 결론을 내릴 땐 어떤 데이터가 달라졌는지 명시할 것.")
+    return "\n\n" + "\n".join(lines)
+
+
 def format_rsi_wave_for_ai(symbol, results):
     """분석 결과를 AI에게 보낼 텍스트로 포맷팅 (v2 — 레짐/다이버전스/점수/목표가 포함)"""
     lines = [
