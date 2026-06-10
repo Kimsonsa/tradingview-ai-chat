@@ -2730,6 +2730,7 @@ def generate_summary_text(results):
         lines.append(f"- **레짐**: {' · '.join(regime_summary)}")
 
     # ── 🚦 주문흐름 게이트 (백테스트 검증 컨플루언스) ──
+    gate_state = {}
     gate_parts = []
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
@@ -2738,16 +2739,40 @@ def generate_summary_text(results):
         g = flow_gate(r)
         if g is None:
             continue
+        gate_state[tf] = (r.get("position"), g)
         gate_parts.append(f"{TF_LABELS_SHORT.get(tf, tf)} {'✅' if g == 'AGREE' else '✖'}")
     if gate_parts:
         lines.append(f"- **주문흐름 게이트**(OBV/CVD가 신호 방향에 동의): {' · '.join(gate_parts)}")
-        g15 = flow_gate(results.get("15분") or {})
+        lines.append("  - 읽는 법: ✅ = 그 TF의 신호 방향에 실제 시장 체결(매집/매도)이 따라붙고 있음 → 신뢰↑ · "
+                     "✖ = 신호는 있지만 주문흐름 확인 없음 → 신뢰↓")
+
+        # 핵심 TF별 구체 해석
+        p15, g15 = gate_state.get("15분", (None, None))
         if g15 == "AGREE":
-            lines.append("  - ✅ **15분 게이트 통과** — 백테스트 검증 조합 "
-                         "(짧은 목표 0.5R 기준 검증 승률 ~73%, 지정가 진입 권장)")
+            lines.append(f"  - ✅ **15분 {p15} — 검증 조합 충족**: {p15} 신호에 "
+                         f"{'매수' if p15 == '롱' else '매도'} 체결이 동반. 백테스트 검증 구간 승률 71~75% 조건 "
+                         "(목표 0.5R 스캘프 · 지정가 진입 기준)")
         elif g15 == "DISAGREE":
-            lines.append("  - ⚠️ 15분 게이트 미통과 — 주문흐름 확인이 없는 신호. "
-                         "백테스트상 이런 신호는 기대값이 낮아 진입 보수적으로")
+            lines.append(f"  - ✖ **15분 {p15} — 검증 조건 미충족**: 신호는 떴지만 주문흐름이 확인해주지 않음. "
+                         "백테스트상 이런 신호의 기대값은 0 이하 → 이 신호 단독으로는 진입하지 말 것")
+        p1h, g1h = gate_state.get("1시간", (None, None))
+        if g1h == "AGREE":
+            extra = ""
+            if p15 and p1h and p1h != p15:
+                extra = f" — 15분 {p15}과 반대라 단기 변동성 주의"
+            lines.append(f"  - ✅ 1시간 {p1h}: {p1h} 방향에 실체결 동반{extra}. "
+                         "단, 1시간은 백테스트에서 탈락한 TF(승률 60%대) — 진입 근거가 아니라 "
+                         f"반대 포지션에 대한 경고로 읽을 것")
+        p4h, g4h = gate_state.get("4시간", (None, None))
+        if g4h == "AGREE":
+            lines.append(f"  - ✅ 4시간 {p4h}: 큰 흐름의 {p4h} 방향을 주문흐름이 보강 — 방향 판단 재료")
+
+        # 게이트끼리 충돌 (롱 ✅ 와 숏 ✅ 공존)
+        agree_long = [tf for tf, (p, g) in gate_state.items() if g == "AGREE" and p == "롱"]
+        agree_short = [tf for tf, (p, g) in gate_state.items() if g == "AGREE" and p == "숏"]
+        if agree_long and agree_short:
+            lines.append(f"  - ⚔️ **게이트 충돌**: {'/'.join(agree_long)} 롱 ✅ vs {'/'.join(agree_short)} 숏 ✅ "
+                         "— 프레임끼리 실체결을 동반하며 싸우는 중. 휩쏘 구간이므로 사이즈 축소 또는 관망")
 
     # ── 펀딩 (심볼 단위, 1회) ──
     for tf in WAVE_TIMEFRAMES:
@@ -2813,6 +2838,58 @@ def generate_summary_text(results):
         alerts.sort(key=lambda x: x[0])
         lines.append("\n**⚠️ 주의**")
         lines.extend(f"- {text}" for _, text in alerts[:5])
+
+    # ── 🎯 바텀라인 (기계 판정 — 들어가도 되는가) ──
+    lines.append("\n---")
+    lines.append("**🎯 바텀라인**")
+
+    r15 = results.get("15분") or {}
+    g15 = flow_gate(r15)
+    p15 = r15.get("position")
+    direction = ea["direction"] if ea else "중립"
+    dir_score = ea["direction_score"] if ea else None
+
+    # 방향별 기대치 요약 — 측정된 근거만 사용
+    for side in ("롱", "숏"):
+        notes = []
+        if direction == side:
+            notes.append(f"방향 우위 {dir_score}/100")
+        elif direction in ("롱", "숏"):
+            notes.append("방향 열위(역추세 — 상위 프레임 역행)")
+        else:
+            notes.append("방향성 없음")
+        if p15 == side:
+            if g15 == "AGREE":
+                notes.append("15분 게이트 ✅ → **검증 조건 충족** (0.5R 스캘프 검증 승률 71~75%)")
+            else:
+                notes.append("15분 게이트 ✖ → 검증 조건 미충족 (백테스트 기대값 ≈ 0 이하)")
+        else:
+            notes.append("15분 신호 없음")
+        lines.append(f"- **{side}**: {' · '.join(notes)}")
+
+    # 최종 판정
+    best_r = 0
+    if es and es.get("scenarios"):
+        best_r = max((s.get("R") or 0) for s in es["scenarios"])
+    verified = (g15 == "AGREE" and p15 == direction and direction in ("롱", "숏"))
+
+    if verified and ea and ea.get("chase_ok"):
+        verdict = "🟢 들어가도 좋다 (제한 사이즈)"
+        why = (f"검증 조합 충족 + 즉시진입 적합 — {direction} 목표 0.5R 지정가, "
+               f"권장 사이즈({ea['position_size']}) 안에서")
+    elif verified:
+        verdict = "🟡 조건부 진입"
+        why = (f"검증 조합({direction})은 충족했으나 즉시진입 점수가 낮음 — "
+               "추격 말고 눌림/반등 레벨 지정가로만, 목표 0.5R")
+    elif direction in ("롱", "숏") and best_r >= 1.5:
+        verdict = "🟡 기다렸다 쳐라"
+        why = (f"방향({direction})은 있으나 15분 게이트 미충족 — 위 시나리오 표의 "
+               f"{best_r}R 레벨 도달 + 반등실패 확인 시에만 최소 사이즈")
+    else:
+        verdict = "🔴 쉬어라"
+        why = ("지금은 통계가 편드는 조합이 아님(게이트 미충족/신호 충돌/손익비 불리). "
+               "재평가 트리거: 15분 신호와 게이트가 같은 방향으로 동시 충족될 때")
+    lines.append(f"- **판정: {verdict}** — {why}")
 
     return "\n".join(lines)
 
