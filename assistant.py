@@ -687,9 +687,14 @@ with st.sidebar:
 
     # ── 페이지 바로가기 ──
     st.markdown('<div class="history-label">도구</div>', unsafe_allow_html=True)
-    st.page_link("pages/1_워치리스트.py", label="📊 워치리스트")
-    st.page_link("pages/2_신호성적표.py", label="📈 신호 성적표")
-    st.page_link("pages/3_백테스트.py", label="🧪 백테스트")
+    try:
+        st.page_link("pages/1_워치리스트.py", label="📊 워치리스트")
+        st.page_link("pages/2_신호성적표.py", label="📈 신호 성적표")
+        st.page_link("pages/3_백테스트.py", label="🧪 백테스트")
+    except Exception:
+        # pages/ 폴더가 생기기 전에 시작된 서버는 페이지 레지스트리가 비어
+        # KeyError가 난다(업데이트 직후 구 프로세스) → 재시작 안내만 표시
+        st.caption("⚠️ 새 페이지 로드 실패 — 앱을 완전히 종료 후 다시 실행하세요.")
 
     # ── 설정 (하단 접이식) ──
     st.markdown("---")

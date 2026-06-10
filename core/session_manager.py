@@ -225,36 +225,8 @@ def delete_session(session_id):
             pass
 
 
-def list_sessions():
-    """전체 세션 목록 (최신순) — Supabase 우선, 로컬 폴백
-    반환: [{ id, symbol, interval, created_at, closed_at, status, summary, msg_count }, ...]
-    """
-    # 1) Supabase
-    if _ensure_db():
-        conn = _get_conn()
-        if conn:
-            try:
-                c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                c.execute("""
-                    SELECT id, symbol, interval, status, created_at, closed_at, summary,
-                           jsonb_array_length(COALESCE(messages, '[]'::jsonb)) as msg_count
-                    FROM trade_sessions
-                    ORDER BY created_at DESC
-                """)
-                rows = c.fetchall()
-                sessions = []
-                for row in rows:
-                    d = dict(row)
-                    if isinstance(d.get("summary"), str):
-                        d["summary"] = json.loads(d["summary"])
-                    sessions.append(d)
-                return sessions
-            except Exception:
-                pass
-            finally:
-                conn.close()
-
-    # 2) 로컬 폴백
+def _list_local_sessions():
+    """로컬 sessions/*.json 목록"""
     _ensure_dir()
     sessions = []
     for fname in os.listdir(SESSIONS_DIR):
@@ -276,6 +248,44 @@ def list_sessions():
             })
         except Exception:
             continue
+    return sessions
 
-    sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+
+def list_sessions():
+    """전체 세션 목록 (최신순) — Supabase + 로컬 병합 (같은 id는 DB 우선).
+
+    DB가 닿을 때 DB 목록만 보여주면, DB 장애 중에 로컬로만 저장됐거나
+    DB에서 사라진 과거 기록이 안 보인다 → 항상 병합해서 누락을 막는다.
+    반환: [{ id, symbol, interval, created_at, closed_at, status, summary, msg_count }, ...]
+    """
+    by_id = {}
+
+    # 1) 로컬 (DB 행이 있으면 아래에서 덮어씀)
+    for s in _list_local_sessions():
+        by_id[s["id"]] = s
+
+    # 2) Supabase — 같은 id는 DB가 최신/정본
+    if _ensure_db():
+        conn = _get_conn()
+        if conn:
+            try:
+                c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                c.execute("""
+                    SELECT id, symbol, interval, status, created_at, closed_at, summary,
+                           jsonb_array_length(COALESCE(messages, '[]'::jsonb)) as msg_count
+                    FROM trade_sessions
+                    ORDER BY created_at DESC
+                """)
+                for row in c.fetchall():
+                    d = dict(row)
+                    if isinstance(d.get("summary"), str):
+                        d["summary"] = json.loads(d["summary"])
+                    by_id[d["id"]] = d
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+    sessions = list(by_id.values())
+    sessions.sort(key=lambda s: (s.get("created_at") or ""), reverse=True)
     return sessions
