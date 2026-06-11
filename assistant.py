@@ -605,9 +605,10 @@ def _position_context(sess):
     _eff_m = (st.session_state.account_size
               if p.get("margin_mode") == "교차" and st.session_state.account_size > 0
               else p.get("margin"))
-    _liq = _liq_price(p.get("direction"), p.get("entry"), p.get("qty"), _eff_m)
+    _liq = p.get("liq") or _liq_price(p.get("direction"), p.get("entry"), p.get("qty"), _eff_m)
     if _liq:
-        parts.append(f"예상 청산가 {_liq:,.6g} ({p.get('margin_mode', '격리')})")
+        _src = "거래소 실측" if p.get("liq") else "추정"
+        parts.append(f"청산가 {_liq:,.6g} ({p.get('margin_mode', '격리')}·{_src})")
     if cur is not None and pnl is not None:
         parts.append(f"현재가 {cur} (PnL {pnl:+.2f}%)")
     return (
@@ -1180,11 +1181,14 @@ if _pos:
         _pnl_txt = None
         if _pnl is not None:
             _pnl_txt = f"{_pnl:+.2f}%" + (f" ({_pnl_usdt:+,.1f}$)" if _pnl_usdt is not None else "")
-        # 예상 청산가 (교차면 계좌 전체를 담보로 근사)
+        # 청산가 — 거래소 실측값(직접 입력) 우선, 없으면 단순 모델 추정
         _eff_margin = (st.session_state.account_size
                        if _pos.get("margin_mode") == "교차" and st.session_state.account_size > 0
                        else _pos.get("margin"))
-        _liq = _liq_price(_pos["direction"], _pos["entry"], _pos.get("qty"), _eff_margin)
+        _liq_measured = _pos.get("liq")
+        _liq = _liq_measured or _liq_price(_pos["direction"], _pos["entry"],
+                                           _pos.get("qty"), _eff_margin)
+        _liq_label = "청산가 (실측)" if _liq_measured else "예상 청산가"
 
         pm1, pm2, pm3, pm4, pm5, pm6 = st.columns([1.1, 1.1, 0.9, 0.9, 1.1, 0.5])
         pm1.metric(f"🎯 {_pos['direction']} 진입가", f"{_pos['entry']:,.6g}",
@@ -1192,7 +1196,7 @@ if _pos:
         pm2.metric("현재가", f"{_cur:,.6g}", _pnl_txt)
         pm3.metric("손절까지", f"{_to_stop:+.2f}%" if _to_stop is not None else "-")
         pm4.metric("목표까지", f"{_to_target:+.2f}%" if _to_target is not None else "-")
-        pm5.metric("예상 청산가", f"{_liq:,.6g}" if _liq else "-",
+        pm5.metric(_liq_label, f"{_liq:,.6g}" if _liq else "-",
                    f"{(_liq - _cur) / _cur * 100:+.1f}%" if _liq else None, delta_color="off")
         with pm6:
             if st.button("🔄", key=f"pos_refresh_{sess['id']}", help="현재가 즉시 갱신",
@@ -1233,7 +1237,7 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
                                   value=float((_pos or {}).get("target") or 0),
                                   key=f"pos_target_{sess['id']}")
 
-    pq1, pq2, pq3 = st.columns([1.2, 1.2, 0.8])
+    pq1, pq2, pq3, pq4 = st.columns([1.1, 1.1, 0.7, 1.1])
     with pq1:
         _qty = st.number_input("수량 (코인 개수)", min_value=0.0, format="%.6f",
                                value=float((_pos or {}).get("qty") or 0),
@@ -1246,19 +1250,30 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
         _mode = st.selectbox("마진 모드", ["격리", "교차"],
                              index=0 if (_pos or {}).get("margin_mode", "격리") == "격리" else 1,
                              key=f"pos_mode_{sess['id']}")
+    with pq4:
+        _liq_in = st.number_input("청산가 (거래소 표시값)", min_value=0.0, format="%.6f",
+                                  value=float((_pos or {}).get("liq") or 0),
+                                  key=f"pos_liq_{sess['id']}",
+                                  help="거래소 포지션 창의 청산가를 그대로 입력 — 입력하면 "
+                                       "이 값을 사용(실측). 비워두면 단순 모델로 추정. "
+                                       "교차는 지갑 전체·타 포지션이 얽혀 추정이 부정확합니다.")
 
-    # 레버리지/예상 청산가 미리보기 (교차는 계좌 전체를 담보로 근사)
+    # 레버리지/청산가 미리보기 — 직접 입력(실측) 우선, 없으면 모델 추정
     if _entry > 0 and _qty > 0:
         _notional = _entry * _qty
         _eff_m = (st.session_state.account_size
                   if _mode == "교차" and st.session_state.account_size > 0 else _margin)
-        if _eff_m > 0:
-            _lev = _notional / _eff_m
+        _lev_txt = f" · 레버리지 {_notional / _eff_m:.1f}x ({_mode})" if _eff_m > 0 else f" ({_mode})"
+        if _liq_in > 0:
+            st.caption(f"📊 명목 {_notional:,.1f} USDT{_lev_txt} · "
+                       f"청산가 **{_liq_in:,.6g}** (거래소 실측값 사용)")
+        elif _eff_m > 0:
             _liq_prev = _liq_price(_dir, _entry, _qty, _eff_m)
             _liq_txt = (f"예상 청산가 ≈ **{_liq_prev:,.6g}**" if _liq_prev
                         else "청산가 없음(저레버리지)")
-            _mode_note = " · 교차=계좌 전체 담보 근사" if _mode == "교차" else ""
-            st.caption(f"📊 명목 {_notional:,.1f} USDT · 레버리지 {_lev:.1f}x ({_mode}) · "
+            _mode_note = (" · ⚠️ 교차는 추정 부정확 — 거래소 청산가를 직접 입력 권장"
+                          if _mode == "교차" else "")
+            st.caption(f"📊 명목 {_notional:,.1f} USDT{_lev_txt} · "
                        f"{_liq_txt} (유지증거금 0.5% 가정{_mode_note})")
 
     # 리스크 계산기 — 계좌×리스크% ÷ 손절거리 = 권장 사이즈
@@ -1290,6 +1305,7 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
                     "direction": _dir, "entry": _entry,
                     "stop": _stop or None, "target": _target or None,
                     "qty": _qty or None, "margin": _margin or None, "margin_mode": _mode,
+                    "liq": _liq_in or None,  # 거래소 표시 청산가 (실측 — 추정보다 우선)
                     "opened_at": (_pos or {}).get("opened_at") or datetime.now().isoformat(),
                 }
                 evt = (f"🧾 **포지션 {'오픈' if is_new else '수정'}** — {_dir} @{_entry:,.6g}"
