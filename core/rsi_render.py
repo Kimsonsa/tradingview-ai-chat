@@ -353,11 +353,11 @@ def generate_wave_svg(results):
 
 
 def generate_price_ladder_svg(results):
-    """가격 레벨 & 진입 지도 — 세로축=가격 좌표평면 (HTML 프래그먼트 반환).
+    """가격 레벨 & 진입 지도 — 고정 행 간격 사다리 (HTML 프래그먼트 반환).
 
-    현재가 기준 위쪽 저항(빨강)·아래쪽 지지/목표(초록)를 공간 배치하고,
-    진입 시나리오마다 손익비(R) 배지를 표시. 빈 데이터면 "" 반환.
-    파동 맵 HTML 문서의 </body> 앞에 끼워넣는 프래그먼트 형태.
+    가격 비례 배치는 레벨이 현재가 근처에 밀집하면 라벨이 겹쳐 가독성이
+    무너진다 → 레벨당 한 행(고정 34px)으로 표시하고, 비례감은 각 행의
+    '현재가 대비 거리(%)'로 보완한다. 겹침이 구조적으로 발생하지 않는다.
     """
     lm = build_level_map(results)
     if not lm:
@@ -368,8 +368,7 @@ def generate_price_ladder_svg(results):
     price = lm["ref_price"]
     above = lm["above"][:5]
     below = lm["below"][:5]
-    levels = above + below
-    if not levels:
+    if not (above or below):
         return ""
 
     direction = ea["direction"] if ea else "중립"
@@ -383,20 +382,17 @@ def generate_price_ladder_svg(results):
         if es["scenarios"]:
             target_price = es["scenarios"][0]["target"]
 
-    all_p = [c["price"] for c in levels] + [price]
-    pmax, pmin = max(all_p), min(all_p)
-    span = (pmax - pmin) or price * 0.01
-    pad = span * 0.12
-    pmax += pad
-    pmin -= pad
+    # 행 구성: 위 레벨(가격 내림차순) → 현재가 → 아래 레벨(가격 내림차순)
+    rows = [("level", c) for c in sorted(above, key=lambda x: -x["price"])]
+    rows.append(("current", None))
+    rows += [("level", c) for c in sorted(below, key=lambda x: -x["price"])]
 
-    W, H = 720, 430
-    PAD_T, PAD_B = 50, 22
-    PLOT_H = H - PAD_T - PAD_B
-    LINE_X1, LINE_X2 = 118, 548
-
-    def y(p):
-        return PAD_T + PLOT_H * (pmax - p) / (pmax - pmin)
+    W = 720
+    ROW_H = 34
+    TOP = 54
+    FOOT = 28
+    H = TOP + len(rows) * ROW_H + FOOT
+    LINE_X1, LINE_X2 = 178, 532
 
     grade_color = {"양호": "#22C55E", "보통": "#F59E0B", "부적합": "#EF4444", "산출불가": "#94A3B8"}
     p = []
@@ -412,14 +408,16 @@ def generate_price_ladder_svg(results):
   </defs>
   <rect width="{W}" height="{H}" fill="url(#bg_grad2)" rx="16"/>''')
 
-    cy = y(price)
+    cur_idx = next(i for i, (k, _) in enumerate(rows) if k == "current")
+    cur_y = TOP + cur_idx * ROW_H + ROW_H / 2
+
     # ── 방향별 존 음영 (수익 zone / 위험 zone) ──
-    if direction == "숏":
-        p.append(f'<rect x="{LINE_X1}" y="{cy:.0f}" width="{LINE_X2 - LINE_X1}" height="{H - PAD_B - cy:.0f}" fill="rgba(34,197,94,0.06)"/>')
-        p.append(f'<rect x="{LINE_X1}" y="{PAD_T}" width="{LINE_X2 - LINE_X1}" height="{cy - PAD_T:.0f}" fill="rgba(239,68,68,0.06)"/>')
-    elif direction == "롱":
-        p.append(f'<rect x="{LINE_X1}" y="{PAD_T}" width="{LINE_X2 - LINE_X1}" height="{cy - PAD_T:.0f}" fill="rgba(34,197,94,0.06)"/>')
-        p.append(f'<rect x="{LINE_X1}" y="{cy:.0f}" width="{LINE_X2 - LINE_X1}" height="{H - PAD_B - cy:.0f}" fill="rgba(239,68,68,0.06)"/>')
+    zone_top, zone_bot = TOP, H - FOOT
+    if direction in ("숏", "롱"):
+        up_col = "rgba(239,68,68,0.06)" if direction == "숏" else "rgba(34,197,94,0.06)"
+        dn_col = "rgba(34,197,94,0.06)" if direction == "숏" else "rgba(239,68,68,0.06)"
+        p.append(f'<rect x="{LINE_X1}" y="{zone_top}" width="{LINE_X2 - LINE_X1}" height="{cur_y - zone_top:.0f}" fill="{up_col}"/>')
+        p.append(f'<rect x="{LINE_X1}" y="{cur_y:.0f}" width="{LINE_X2 - LINE_X1}" height="{zone_bot - cur_y:.0f}" fill="{dn_col}"/>')
 
     # ── 타이틀 + 방향 배지 ──
     p.append(f'<text x="20" y="30" fill="#E0E0F0" font-size="15" font-family="Inter,sans-serif" font-weight="600">📐 가격 레벨 &amp; 진입 지도</text>')
@@ -428,50 +426,59 @@ def generate_price_ladder_svg(results):
         p.append(f'<rect x="{W-110}" y="14" width="92" height="22" rx="11" fill="{dcol}" opacity="0.18"/>')
         p.append(f'<text x="{W-64}" y="29" fill="{dcol}" font-size="12" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">{direction} 우위</text>')
 
-    # ── 레벨 라인 ──
-    for c in levels:
+    # ── 행 렌더링 (고정 간격 — 겹침 없음) ──
+    for i, (kind, c) in enumerate(rows):
+        ry = TOP + i * ROW_H + ROW_H / 2
+
+        if kind == "current":
+            # 현재가 행 — 흰 라인 + 파란 배지
+            p.append(f'<line x1="{LINE_X1-6}" y1="{ry:.1f}" x2="{LINE_X2+6}" y2="{ry:.1f}" stroke="#FFFFFF" stroke-width="2" filter="url(#glow2)"/>')
+            p.append(f'<rect x="{LINE_X1-110}" y="{ry-11:.1f}" width="100" height="22" rx="6" fill="#2962FF"/>')
+            p.append(f'<text x="{LINE_X1-60:.0f}" y="{ry+4:.1f}" fill="#fff" font-size="11.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">현재 {price:,.1f}</text>')
+            if price in entry_info:
+                R, grade = entry_info[price]
+                bc = grade_color.get(grade, "#94A3B8")
+                rtxt = f"{R}R" if R is not None else "-"
+                bx = (LINE_X1 + LINE_X2) / 2 - 50
+                p.append(f'<rect x="{bx:.0f}" y="{ry-10:.1f}" width="100" height="18" rx="9" fill="#16213e" stroke="{bc}" stroke-width="1"/>')
+                p.append(f'<text x="{bx+50:.0f}" y="{ry+3:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">추격 {rtxt}·{grade}</text>')
+            continue
+
         lp = c["price"]
-        ly = y(lp)
         is_res = lp > price
         col = "#EF4444" if is_res else "#22C55E"
         conf = c["n"] >= 3
-        sw = "1.6" if conf else "1"
-        dash = "1,0" if conf else "5,5"
-        p.append(f'<line x1="{LINE_X1}" y1="{ly:.1f}" x2="{LINE_X2}" y2="{ly:.1f}" stroke="{col}" stroke-width="{sw}" stroke-dasharray="{dash}" opacity="0.55"/>')
-        # 가격 라벨 (왼쪽)
+        dist = (lp - price) / price * 100
+
+        # 좌측: 가격 + 컨플루언스 별 + 거리%
         star = "⭐" if conf else ""
-        p.append(f'<text x="{LINE_X1-8}" y="{ly+4:.1f}" fill="{col}" font-size="12" font-family="Inter,sans-serif" text-anchor="end" font-weight="{"600" if conf else "500"}">{lp:,.1f}{star}</text>')
-        # 출처 태그 (오른쪽)
+        p.append(f'<text x="{LINE_X1-10}" y="{ry+1:.1f}" fill="{col}" font-size="13" font-family="Inter,sans-serif" text-anchor="end" font-weight="{"700" if conf else "500"}">{lp:,.1f}{star}</text>')
+        p.append(f'<text x="{LINE_X1-10}" y="{ry+13:.1f}" fill="#777799" font-size="9" font-family="Inter,sans-serif" text-anchor="end">{dist:+.2f}%</text>')
+
+        # 라인 (컨플루언스=실선 굵게 / 단일=점선)
+        sw = "1.8" if conf else "1"
+        dash = "1,0" if conf else "5,5"
+        p.append(f'<line x1="{LINE_X1}" y1="{ry:.1f}" x2="{LINE_X2}" y2="{ry:.1f}" stroke="{col}" stroke-width="{sw}" stroke-dasharray="{dash}" opacity="0.6"/>')
+
+        # 우측: 출처 태그
         tags = ", ".join(c["labels"][:3])
-        p.append(f'<text x="{LINE_X2+8}" y="{ly+4:.1f}" fill="#8888AA" font-size="9.5" font-family="Inter,sans-serif">{tags}</text>')
-        # 목표 마커
-        if target_price is not None and abs(lp - target_price) < 0.01:
-            p.append(f'<text x="{(LINE_X1+LINE_X2)/2:.0f}" y="{ly-5:.1f}" fill="#22C55E" font-size="11" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">🎯 1차 목표</text>')
-        # 진입 R 배지
+        p.append(f'<text x="{LINE_X2+8}" y="{ry+4:.1f}" fill="#8888AA" font-size="9.5" font-family="Inter,sans-serif">{tags}</text>')
+
+        # 중앙 배지: 진입 R / 1차 목표 (배경 채워 라인 위에 떠 보이게)
         if lp in entry_info:
             R, grade = entry_info[lp]
             bc = grade_color.get(grade, "#94A3B8")
             rtxt = f"{R}R" if R is not None else "-"
-            bx = (LINE_X1 + LINE_X2) / 2 - 38
-            p.append(f'<rect x="{bx:.0f}" y="{ly-10:.1f}" width="76" height="18" rx="9" fill="{bc}" opacity="0.2"/>')
-            p.append(f'<text x="{bx+38:.0f}" y="{ly+3:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">진입 {rtxt}·{grade}</text>')
-
-    # ── 현재가 라인 (강조) ──
-    p.append(f'<line x1="{LINE_X1-4}" y1="{cy:.1f}" x2="{LINE_X2+4}" y2="{cy:.1f}" stroke="#FFFFFF" stroke-width="2" filter="url(#glow2)"/>')
-    p.append(f'<rect x="{LINE_X1-92}" y="{cy-11:.1f}" width="82" height="22" rx="6" fill="#2962FF"/>')
-    p.append(f'<text x="{LINE_X1-51:.0f}" y="{cy+4:.1f}" fill="#fff" font-size="11.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">현재 {price:,.1f}</text>')
-
-    # 현재가 추격 배지
-    if price in entry_info:
-        R, grade = entry_info[price]
-        bc = grade_color.get(grade, "#94A3B8")
-        rtxt = f"{R}R" if R is not None else "-"
-        bx = (LINE_X1 + LINE_X2) / 2 - 50
-        p.append(f'<rect x="{bx:.0f}" y="{cy-10:.1f}" width="100" height="18" rx="9" fill="{bc}" opacity="0.22"/>')
-        p.append(f'<text x="{bx+50:.0f}" y="{cy+3:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">추격 {rtxt}·{grade}</text>')
+            bx = (LINE_X1 + LINE_X2) / 2 - 44
+            p.append(f'<rect x="{bx:.0f}" y="{ry-10:.1f}" width="88" height="19" rx="9" fill="#16213e" stroke="{bc}" stroke-width="1"/>')
+            p.append(f'<text x="{bx+44:.0f}" y="{ry+3.5:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">진입 {rtxt}·{grade}</text>')
+        elif target_price is not None and abs(lp - target_price) < 0.01:
+            bx = (LINE_X1 + LINE_X2) / 2 - 40
+            p.append(f'<rect x="{bx:.0f}" y="{ry-10:.1f}" width="80" height="19" rx="9" fill="#16213e" stroke="#22C55E" stroke-width="1"/>')
+            p.append(f'<text x="{bx+40:.0f}" y="{ry+3.5:.1f}" fill="#22C55E" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">🎯 1차 목표</text>')
 
     # ── 범례 ──
-    p.append(f'<text x="20" y="{H-7}" fill="#777799" font-size="9" font-family="Inter,sans-serif">🔴저항  🟢지지·목표  ⭐컨플루언스  ·  R=목표거리÷손절거리</text>')
+    p.append(f'<text x="20" y="{H-9}" fill="#777799" font-size="9" font-family="Inter,sans-serif">🔴저항  🟢지지·목표  ⭐컨플루언스(실선)  ·  좌측 %=현재가 대비 거리  ·  R=목표거리÷손절거리</text>')
 
     p.append("</svg></div>")
     return "\n".join(p)
