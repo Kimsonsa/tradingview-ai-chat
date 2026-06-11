@@ -842,7 +842,8 @@ if st.session_state.viewing_history:
 
         # 대화 내용 표시
         for msg in hist_data.get("messages", []):
-            with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
+            _av = "🧾" if msg.get("trade_event") else ("🤖" if msg["role"] == "assistant" else "👤")
+            with st.chat_message(msg["role"], avatar=_av):
                 if msg.get("rsi_wave_html"):
                     _wh = 960 if "진입 지도" in msg["rsi_wave_html"] else 500
                     components.html(msg["rsi_wave_html"], height=_wh, scrolling=False)
@@ -883,7 +884,9 @@ with col_title:
 
 with col_close:
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("📤 포지션 종료", key="close_position", use_container_width=True):
+    if st.button("📁 방 종료·요약", key="close_position", use_container_width=True,
+                 help="대화를 AI로 요약해 거래 히스토리에 보관하고 이 방을 닫습니다. "
+                      "포지션 청산은 아래 포지션 패널에서 하세요."):
         _close_position(sess)
 
 with col_delete:
@@ -921,91 +924,7 @@ with st.expander("🔧 종목 직접 입력 / 수정 (자동인식이 안 잡힐
                 st.rerun()
 
 
-# ── 🎯 포지션 추적 + 리스크 계산기 ──
-_pos = sess.get("position")
-
-# 보유 중이면 실시간 PnL 메트릭 표시
-if _pos:
-    try:
-        _cur = _current_price(sess.get("symbol") or "BTCUSDT")
-    except Exception:
-        _cur = None
-    if _cur:
-        _pnl, _to_stop, _to_target = _position_pnl(_pos, _cur)
-        pm1, pm2, pm3, pm4 = st.columns(4)
-        pm1.metric(f"🎯 {_pos['direction']} 진입가", f"{_pos['entry']:,.6g}")
-        pm2.metric("현재가", f"{_cur:,.6g}",
-                   f"{_pnl:+.2f}%" if _pnl is not None else None)
-        pm3.metric("손절까지", f"{_to_stop:+.2f}%" if _to_stop is not None else "-")
-        pm4.metric("목표까지", f"{_to_target:+.2f}%" if _to_target is not None else "-")
-        # 손절 임박/이탈 경고
-        if _pos.get("stop") and _pos.get("entry"):
-            _hit = ((_pos["direction"] == "롱" and _cur <= _pos["stop"]) or
-                    (_pos["direction"] == "숏" and _cur >= _pos["stop"]))
-            _init_dist = abs(_pos["entry"] - _pos["stop"])
-            if _hit:
-                st.error("🚨 현재가가 손절가를 넘었습니다!")
-            elif _init_dist > 0 and abs(_cur - _pos["stop"]) < _init_dist * 0.3:
-                st.warning(f"⚠️ 손절가까지 {_to_stop:+.2f}% — 초기 손절거리의 70% 이상 소진됨")
-
-with st.expander("🎯 포지션 추적 / 리스크 계산기"
-                 + (f" — {_pos['direction']} 보유 중" if _pos else ""),
-                 expanded=False):
-    pc1, pc2, pc3, pc4 = st.columns([0.8, 1.2, 1.2, 1.2])
-    with pc1:
-        _dir = st.selectbox("방향", ["롱", "숏"],
-                            index=0 if not _pos or _pos.get("direction") == "롱" else 1,
-                            key=f"pos_dir_{sess['id']}")
-    with pc2:
-        _entry = st.number_input("진입가", min_value=0.0, format="%.6f",
-                                 value=float((_pos or {}).get("entry") or 0),
-                                 key=f"pos_entry_{sess['id']}")
-    with pc3:
-        _stop = st.number_input("손절가", min_value=0.0, format="%.6f",
-                                value=float((_pos or {}).get("stop") or 0),
-                                key=f"pos_stop_{sess['id']}")
-    with pc4:
-        _target = st.number_input("목표가", min_value=0.0, format="%.6f",
-                                  value=float((_pos or {}).get("target") or 0),
-                                  key=f"pos_target_{sess['id']}")
-
-    # 리스크 계산기 — 계좌×리스크% ÷ 손절거리 = 권장 사이즈
-    if _entry > 0 and _stop > 0 and _entry != _stop:
-        _stop_dist = abs(_entry - _stop) / _entry * 100
-        _rr_txt = ""
-        if _target > 0:
-            _r = abs(_target - _entry) / abs(_entry - _stop)
-            _rr_txt = f" · 손익비 {_r:.2f}R"
-        if st.session_state.account_size > 0:
-            _risk_amt = st.session_state.account_size * st.session_state.risk_pct / 100
-            _notional = _risk_amt / (_stop_dist / 100)
-            _qty = _notional / _entry
-            st.info(f"📐 손절거리 {_stop_dist:.2f}%{_rr_txt} · "
-                    f"리스크 {_risk_amt:,.1f} USDT({st.session_state.risk_pct}%) → "
-                    f"권장 포지션 **{_notional:,.0f} USDT** (수량 ≈ {_qty:.6g}, "
-                    f"계좌 대비 {_notional / st.session_state.account_size:.1f}x)")
-        else:
-            st.caption(f"📐 손절거리 {_stop_dist:.2f}%{_rr_txt} — "
-                       f"⚙️ 설정에서 계좌 크기를 입력하면 권장 사이즈를 계산합니다.")
-
-    pb1, pb2 = st.columns(2)
-    with pb1:
-        if st.button("💾 포지션 저장", key=f"pos_save_{sess['id']}", use_container_width=True):
-            if _entry > 0:
-                sess["position"] = {
-                    "direction": _dir, "entry": _entry,
-                    "stop": _stop or None, "target": _target or None,
-                    "opened_at": datetime.now().isoformat(),
-                }
-                _safe_save_session(sess)
-                st.rerun()
-            else:
-                st.toast("⚠️ 진입가를 입력하세요")
-    with pb2:
-        if _pos and st.button("✖ 포지션 해제", key=f"pos_clear_{sess['id']}", use_container_width=True):
-            sess.pop("position", None)
-            _safe_save_session(sess)
-            st.rerun()
+# (포지션 패널은 채팅 입력 바로 위로 이동 — 진입/청산이 이 방의 거래 기록으로 남음)
 
 
 # 퀵 분석 프롬프트 → 짧은 표시 매핑
@@ -1025,7 +944,8 @@ def _shorten_prompt(content):
 
 # ── 이전 메시지 표시 ──
 for msg in sess.get("messages", []):
-    with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
+    _av = "🧾" if msg.get("trade_event") else ("🤖" if msg["role"] == "assistant" else "👤")
+    with st.chat_message(msg["role"], avatar=_av):
         if msg.get("rsi_wave_html"):
             _wh = 960 if "진입 지도" in msg["rsi_wave_html"] else 500
             components.html(msg["rsi_wave_html"], height=_wh, scrolling=False)
@@ -1110,11 +1030,6 @@ with cols[2]:
                 st.toast(f"⚠️ {title}")
         st.rerun()
 
-# ── 하단 포지션 종료 버튼 ──
-st.markdown('<div class="close-position-btn">', unsafe_allow_html=True)
-if st.button("📤 포지션 종료", key="close_position_bottom", use_container_width=True):
-    _close_position(sess)
-st.markdown('</div>', unsafe_allow_html=True)
 
 # Pending 메시지 처리
 pending = st.session_state.pop("_pending_msg", None)
@@ -1203,6 +1118,158 @@ if pending_rsi_wave and _active_api_key():
 
 elif pending_rsi_wave and not _active_api_key():
     st.warning(_key_warning())
+
+# ═══════════════════════════════════════════════
+# 🎯 포지션 패널 — 채팅 입력 바로 위 (진입/수정/청산이 이 방의 기록으로 남음)
+# ═══════════════════════════════════════════════
+
+def _fmt_duration(start_iso):
+    """보유 시간 표기"""
+    try:
+        sec = (datetime.now() - datetime.fromisoformat(start_iso)).total_seconds()
+        h, m = int(sec // 3600), int(sec % 3600 // 60)
+        return f"{h}시간 {m}분" if h else f"{m}분"
+    except Exception:
+        return "?"
+
+
+def _append_trade_event(sess, text):
+    """거래 이벤트를 채팅 기록에 남긴다 — AI 컨텍스트 + 복기 자료가 된다"""
+    sess["messages"].append({"role": "user", "content": text, "trade_event": True})
+
+
+_pos = sess.get("position")
+_cur = None
+if _pos:
+    try:
+        _cur = _current_price(sess.get("symbol") or "BTCUSDT")
+    except Exception:
+        _cur = None
+    if _cur:
+        _pnl, _to_stop, _to_target = _position_pnl(_pos, _cur)
+        pm1, pm2, pm3, pm4 = st.columns(4)
+        pm1.metric(f"🎯 {_pos['direction']} 진입가", f"{_pos['entry']:,.6g}",
+                   f"보유 {_fmt_duration(_pos.get('opened_at', ''))}", delta_color="off")
+        pm2.metric("현재가", f"{_cur:,.6g}",
+                   f"{_pnl:+.2f}%" if _pnl is not None else None)
+        pm3.metric("손절까지", f"{_to_stop:+.2f}%" if _to_stop is not None else "-")
+        pm4.metric("목표까지", f"{_to_target:+.2f}%" if _to_target is not None else "-")
+        if _pos.get("stop") and _pos.get("entry"):
+            _hit = ((_pos["direction"] == "롱" and _cur <= _pos["stop"]) or
+                    (_pos["direction"] == "숏" and _cur >= _pos["stop"]))
+            _init_dist = abs(_pos["entry"] - _pos["stop"])
+            if _hit:
+                st.error("🚨 현재가가 손절가를 넘었습니다!")
+            elif _init_dist > 0 and abs(_cur - _pos["stop"]) < _init_dist * 0.3:
+                st.warning(f"⚠️ 손절가까지 {_to_stop:+.2f}% — 초기 손절거리의 70% 이상 소진됨")
+
+with st.expander("🎯 포지션 기록 / 리스크 계산기"
+                 + (f" — {_pos['direction']} 보유 중" if _pos else " — 미보유"),
+                 expanded=False):
+    pc1, pc2, pc3, pc4 = st.columns([0.8, 1.2, 1.2, 1.2])
+    with pc1:
+        _dir = st.selectbox("방향", ["롱", "숏"],
+                            index=0 if not _pos or _pos.get("direction") == "롱" else 1,
+                            key=f"pos_dir_{sess['id']}")
+    with pc2:
+        _entry = st.number_input("진입가", min_value=0.0, format="%.6f",
+                                 value=float((_pos or {}).get("entry") or 0),
+                                 key=f"pos_entry_{sess['id']}")
+    with pc3:
+        _stop = st.number_input("손절가", min_value=0.0, format="%.6f",
+                                value=float((_pos or {}).get("stop") or 0),
+                                key=f"pos_stop_{sess['id']}")
+    with pc4:
+        _target = st.number_input("목표가", min_value=0.0, format="%.6f",
+                                  value=float((_pos or {}).get("target") or 0),
+                                  key=f"pos_target_{sess['id']}")
+
+    # 리스크 계산기 — 계좌×리스크% ÷ 손절거리 = 권장 사이즈
+    if _entry > 0 and _stop > 0 and _entry != _stop:
+        _stop_dist = abs(_entry - _stop) / _entry * 100
+        _rr_txt = ""
+        if _target > 0:
+            _r = abs(_target - _entry) / abs(_entry - _stop)
+            _rr_txt = f" · 손익비 {_r:.2f}R"
+        if st.session_state.account_size > 0:
+            _risk_amt = st.session_state.account_size * st.session_state.risk_pct / 100
+            _notional = _risk_amt / (_stop_dist / 100)
+            _qty = _notional / _entry
+            st.info(f"📐 손절거리 {_stop_dist:.2f}%{_rr_txt} · "
+                    f"리스크 {_risk_amt:,.1f} USDT({st.session_state.risk_pct}%) → "
+                    f"권장 포지션 **{_notional:,.0f} USDT** (수량 ≈ {_qty:.6g}, "
+                    f"계좌 대비 {_notional / st.session_state.account_size:.1f}x)")
+        else:
+            st.caption(f"📐 손절거리 {_stop_dist:.2f}%{_rr_txt} — "
+                       f"⚙️ 설정에서 계좌 크기를 입력하면 권장 사이즈를 계산합니다.")
+
+    pb1, pb2, pb3 = st.columns(3)
+    with pb1:
+        _save_label = "💾 진입 기록" if not _pos else "✏️ 수정 기록"
+        if st.button(_save_label, key=f"pos_save_{sess['id']}", use_container_width=True):
+            if _entry > 0:
+                is_new = not _pos
+                sess["position"] = {
+                    "direction": _dir, "entry": _entry,
+                    "stop": _stop or None, "target": _target or None,
+                    "opened_at": (_pos or {}).get("opened_at") or datetime.now().isoformat(),
+                }
+                evt = (f"🧾 **포지션 {'오픈' if is_new else '수정'}** — {_dir} @{_entry:,.6g}"
+                       + (f" · 손절 {_stop:,.6g}" if _stop else "")
+                       + (f" · 목표 {_target:,.6g}" if _target else ""))
+                _append_trade_event(sess, evt)
+                _safe_save_session(sess)
+                st.rerun()
+            else:
+                st.toast("⚠️ 진입가를 입력하세요")
+    with pb2:
+        if st.button("✅ 청산 기록", key=f"pos_close_{sess['id']}", use_container_width=True,
+                     disabled=not _pos,
+                     help="현재가 기준 실현 PnL을 계산해 이 방의 거래 기록으로 남기고 포지션을 정리합니다. 방은 유지됩니다."):
+            try:
+                exit_p = _cur or _current_price(sess.get("symbol") or "BTCUSDT")
+            except Exception:
+                exit_p = None
+            pnl = None
+            if exit_p:
+                pnl = ((exit_p - _pos["entry"]) if _pos["direction"] == "롱"
+                       else (_pos["entry"] - exit_p)) / _pos["entry"] * 100
+            dur = _fmt_duration(_pos.get("opened_at", ""))
+            icon = "🟢" if (pnl or 0) >= 0 else "🔴"
+            evt = (f"🧾 {icon} **포지션 청산** — {_pos['direction']} {_pos['entry']:,.6g}"
+                   + (f" → {exit_p:,.6g} (**{pnl:+.2f}%**)" if pnl is not None else " (청산가 미확인)")
+                   + f" · 보유 {dur}")
+            _append_trade_event(sess, evt)
+            sess.setdefault("trades", []).append({
+                "direction": _pos["direction"], "entry": _pos["entry"],
+                "stop": _pos.get("stop"), "target": _pos.get("target"),
+                "exit": exit_p, "pnl_pct": round(pnl, 3) if pnl is not None else None,
+                "opened_at": _pos.get("opened_at"), "closed_at": datetime.now().isoformat(),
+            })
+            sess.pop("position", None)
+            _safe_save_session(sess)
+            st.rerun()
+    with pb3:
+        if st.button("✖ 취소 (기록 없음)", key=f"pos_clear_{sess['id']}", use_container_width=True,
+                     disabled=not _pos, help="잘못 입력한 포지션을 기록 없이 제거합니다"):
+            sess.pop("position", None)
+            _safe_save_session(sess)
+            st.rerun()
+
+    # 이 방의 거래 성적 (복기용)
+    _trades = sess.get("trades") or []
+    if _trades:
+        _decided = [t for t in _trades if t.get("pnl_pct") is not None]
+        _wins = sum(1 for t in _decided if t["pnl_pct"] > 0)
+        _tot = sum(t["pnl_pct"] for t in _decided)
+        st.caption(f"🧾 이 방의 거래: {len(_trades)}건 · 승 {_wins}/{len(_decided)} · 누적 **{_tot:+.2f}%**")
+        for t in _trades[-5:]:
+            _ic = "🟢" if (t.get("pnl_pct") or 0) >= 0 else "🔴"
+            _tm = _format_time(t.get("closed_at", ""))
+            st.caption(f"  {_ic} {t['direction']} {t['entry']:,.6g} → "
+                       f"{t['exit']:,.6g} ({t['pnl_pct']:+.2f}%) · {_tm}"
+                       if t.get("exit") and t.get("pnl_pct") is not None
+                       else f"  {_ic} {t['direction']} {t['entry']:,.6g} · {_tm}")
 
 # ── 채팅 입력 (자동 캡쳐 체크박스 + 입력) ──
 st.session_state.auto_capture = st.checkbox(
