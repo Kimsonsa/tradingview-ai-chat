@@ -554,6 +554,23 @@ def _machine_context(symbol):
         return ""
 
 
+def _liq_price(direction, entry, qty, margin, mmr=0.005):
+    """예상 청산가 (USDT-M 무기한 단순화 모델, 유지증거금률 0.5% 가정).
+
+    격리: margin = 입력 증거금 / 교차: margin = 계좌 전체(설정값) 근사.
+    저레버리지로 청산가가 0 이하(롱)면 None — 사실상 청산 없음.
+    """
+    try:
+        notional = entry * qty
+        if not entry or not qty or not margin or notional <= 0:
+            return None
+        im = margin / notional  # = 1/레버리지
+        liq = entry * (1 - im + mmr) if direction == "롱" else entry * (1 + im - mmr)
+        return liq if liq > 0 else None
+    except Exception:
+        return None
+
+
 def _position_pnl(p, cur):
     """포지션 dict + 현재가 → (PnL%, 손절까지%, 목표까지%)"""
     entry = p.get("entry")
@@ -579,10 +596,18 @@ def _position_context(sess):
         cur = None
     pnl, _, _ = _position_pnl(p, cur)
     parts = [f"방향 {p.get('direction')}", f"진입가 {p.get('entry')}"]
+    if p.get("qty"):
+        parts.append(f"수량 {p['qty']:,.6g}개")
     if p.get("stop"):
         parts.append(f"손절 {p['stop']}")
     if p.get("target"):
         parts.append(f"목표 {p['target']}")
+    _eff_m = (st.session_state.account_size
+              if p.get("margin_mode") == "교차" and st.session_state.account_size > 0
+              else p.get("margin"))
+    _liq = _liq_price(p.get("direction"), p.get("entry"), p.get("qty"), _eff_m)
+    if _liq:
+        parts.append(f"예상 청산가 {_liq:,.6g} ({p.get('margin_mode', '격리')})")
     if cur is not None and pnl is not None:
         parts.append(f"현재가 {cur} (PnL {pnl:+.2f}%)")
     return (
@@ -1147,13 +1172,34 @@ if _pos:
         _cur = None
     if _cur:
         _pnl, _to_stop, _to_target = _position_pnl(_pos, _cur)
-        pm1, pm2, pm3, pm4 = st.columns(4)
+        # 수량이 있으면 USDT 손익 병기
+        _pnl_usdt = None
+        if _pos.get("qty") and _pnl is not None:
+            _diff = (_cur - _pos["entry"]) if _pos["direction"] == "롱" else (_pos["entry"] - _cur)
+            _pnl_usdt = _diff * _pos["qty"]
+        _pnl_txt = None
+        if _pnl is not None:
+            _pnl_txt = f"{_pnl:+.2f}%" + (f" ({_pnl_usdt:+,.1f}$)" if _pnl_usdt is not None else "")
+        # 예상 청산가 (교차면 계좌 전체를 담보로 근사)
+        _eff_margin = (st.session_state.account_size
+                       if _pos.get("margin_mode") == "교차" and st.session_state.account_size > 0
+                       else _pos.get("margin"))
+        _liq = _liq_price(_pos["direction"], _pos["entry"], _pos.get("qty"), _eff_margin)
+
+        pm1, pm2, pm3, pm4, pm5, pm6 = st.columns([1.1, 1.1, 0.9, 0.9, 1.1, 0.4])
         pm1.metric(f"🎯 {_pos['direction']} 진입가", f"{_pos['entry']:,.6g}",
                    f"보유 {_fmt_duration(_pos.get('opened_at', ''))}", delta_color="off")
-        pm2.metric("현재가", f"{_cur:,.6g}",
-                   f"{_pnl:+.2f}%" if _pnl is not None else None)
+        pm2.metric("현재가", f"{_cur:,.6g}", _pnl_txt)
         pm3.metric("손절까지", f"{_to_stop:+.2f}%" if _to_stop is not None else "-")
         pm4.metric("목표까지", f"{_to_target:+.2f}%" if _to_target is not None else "-")
+        pm5.metric("예상 청산가", f"{_liq:,.6g}" if _liq else "-",
+                   f"{(_liq - _cur) / _cur * 100:+.1f}%" if _liq else None, delta_color="off")
+        with pm6:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🔄", key=f"pos_refresh_{sess['id']}", help="현재가 즉시 갱신",
+                         use_container_width=True):
+                _current_price.clear()
+                st.rerun()
         if _pos.get("stop") and _pos.get("entry"):
             _hit = ((_pos["direction"] == "롱" and _cur <= _pos["stop"]) or
                     (_pos["direction"] == "숏" and _cur >= _pos["stop"]))
@@ -1184,6 +1230,34 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
                                   value=float((_pos or {}).get("target") or 0),
                                   key=f"pos_target_{sess['id']}")
 
+    pq1, pq2, pq3 = st.columns([1.2, 1.2, 0.8])
+    with pq1:
+        _qty = st.number_input("수량 (코인 개수)", min_value=0.0, format="%.6f",
+                               value=float((_pos or {}).get("qty") or 0),
+                               key=f"pos_qty_{sess['id']}")
+    with pq2:
+        _margin = st.number_input("증거금 (USDT)", min_value=0.0, format="%.2f",
+                                  value=float((_pos or {}).get("margin") or 0),
+                                  key=f"pos_margin_{sess['id']}")
+    with pq3:
+        _mode = st.selectbox("마진 모드", ["격리", "교차"],
+                             index=0 if (_pos or {}).get("margin_mode", "격리") == "격리" else 1,
+                             key=f"pos_mode_{sess['id']}")
+
+    # 레버리지/예상 청산가 미리보기 (교차는 계좌 전체를 담보로 근사)
+    if _entry > 0 and _qty > 0:
+        _notional = _entry * _qty
+        _eff_m = (st.session_state.account_size
+                  if _mode == "교차" and st.session_state.account_size > 0 else _margin)
+        if _eff_m > 0:
+            _lev = _notional / _eff_m
+            _liq_prev = _liq_price(_dir, _entry, _qty, _eff_m)
+            _liq_txt = (f"예상 청산가 ≈ **{_liq_prev:,.6g}**" if _liq_prev
+                        else "청산가 없음(저레버리지)")
+            _mode_note = " · 교차=계좌 전체 담보 근사" if _mode == "교차" else ""
+            st.caption(f"📊 명목 {_notional:,.1f} USDT · 레버리지 {_lev:.1f}x ({_mode}) · "
+                       f"{_liq_txt} (유지증거금 0.5% 가정{_mode_note})")
+
     # 리스크 계산기 — 계좌×리스크% ÷ 손절거리 = 권장 사이즈
     if _entry > 0 and _stop > 0 and _entry != _stop:
         _stop_dist = abs(_entry - _stop) / _entry * 100
@@ -1212,9 +1286,12 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
                 sess["position"] = {
                     "direction": _dir, "entry": _entry,
                     "stop": _stop or None, "target": _target or None,
+                    "qty": _qty or None, "margin": _margin or None, "margin_mode": _mode,
                     "opened_at": (_pos or {}).get("opened_at") or datetime.now().isoformat(),
                 }
                 evt = (f"🧾 **포지션 {'오픈' if is_new else '수정'}** — {_dir} @{_entry:,.6g}"
+                       + (f" · {_qty:,.6g}개" if _qty else "")
+                       + (f" · 증거금 {_margin:,.1f}$ {_mode}" if _margin else "")
                        + (f" · 손절 {_stop:,.6g}" if _stop else "")
                        + (f" · 목표 {_target:,.6g}" if _target else ""))
                 _append_trade_event(sess, evt)
@@ -1231,19 +1308,28 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
             except Exception:
                 exit_p = None
             pnl = None
+            pnl_usdt = None
             if exit_p:
-                pnl = ((exit_p - _pos["entry"]) if _pos["direction"] == "롱"
-                       else (_pos["entry"] - exit_p)) / _pos["entry"] * 100
+                diff = ((exit_p - _pos["entry"]) if _pos["direction"] == "롱"
+                        else (_pos["entry"] - exit_p))
+                pnl = diff / _pos["entry"] * 100
+                if _pos.get("qty"):
+                    pnl_usdt = diff * _pos["qty"]
             dur = _fmt_duration(_pos.get("opened_at", ""))
             icon = "🟢" if (pnl or 0) >= 0 else "🔴"
             evt = (f"🧾 {icon} **포지션 청산** — {_pos['direction']} {_pos['entry']:,.6g}"
-                   + (f" → {exit_p:,.6g} (**{pnl:+.2f}%**)" if pnl is not None else " (청산가 미확인)")
+                   + (f" → {exit_p:,.6g} (**{pnl:+.2f}%**" if pnl is not None else " (청산가 미확인")
+                   + (f", {pnl_usdt:+,.1f}$" if pnl_usdt is not None else "")
+                   + (")" if pnl is not None or pnl_usdt is not None else ")")
                    + f" · 보유 {dur}")
             _append_trade_event(sess, evt)
             sess.setdefault("trades", []).append({
                 "direction": _pos["direction"], "entry": _pos["entry"],
                 "stop": _pos.get("stop"), "target": _pos.get("target"),
+                "qty": _pos.get("qty"), "margin": _pos.get("margin"),
+                "margin_mode": _pos.get("margin_mode"),
                 "exit": exit_p, "pnl_pct": round(pnl, 3) if pnl is not None else None,
+                "pnl_usdt": round(pnl_usdt, 2) if pnl_usdt is not None else None,
                 "opened_at": _pos.get("opened_at"), "closed_at": datetime.now().isoformat(),
             })
             sess.pop("position", None)
@@ -1262,7 +1348,10 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
         _decided = [t for t in _trades if t.get("pnl_pct") is not None]
         _wins = sum(1 for t in _decided if t["pnl_pct"] > 0)
         _tot = sum(t["pnl_pct"] for t in _decided)
-        st.caption(f"🧾 이 방의 거래: {len(_trades)}건 · 승 {_wins}/{len(_decided)} · 누적 **{_tot:+.2f}%**")
+        _usd_list = [t["pnl_usdt"] for t in _decided if t.get("pnl_usdt") is not None]
+        _usd_txt = f" ({sum(_usd_list):+,.1f}$)" if _usd_list else ""
+        st.caption(f"🧾 이 방의 거래: {len(_trades)}건 · 승 {_wins}/{len(_decided)} · "
+                   f"누적 **{_tot:+.2f}%**{_usd_txt}")
         for t in _trades[-5:]:
             _ic = "🟢" if (t.get("pnl_pct") or 0) >= 0 else "🔴"
             _tm = _format_time(t.get("closed_at", ""))
