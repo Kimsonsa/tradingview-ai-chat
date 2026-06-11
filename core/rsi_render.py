@@ -352,12 +352,16 @@ def generate_wave_svg(results):
     return "\n".join(svg_parts)
 
 
-def generate_price_ladder_svg(results):
+def generate_price_ladder_svg(results, position=None):
     """가격 레벨 & 진입 지도 — 고정 행 간격 사다리 (HTML 프래그먼트 반환).
 
     가격 비례 배치는 레벨이 현재가 근처에 밀집하면 라벨이 겹쳐 가독성이
     무너진다 → 레벨당 한 행(고정 34px)으로 표시하고, 비례감은 각 행의
     '현재가 대비 거리(%)'로 보완한다. 겹침이 구조적으로 발생하지 않는다.
+
+    position: 사용자가 가장 마지막에 입력한 포지션 dict 하나만.
+        (이전 입력·청산 안 누른 기록은 무시 — 마지막 입력만 유효한 값으로 취급)
+        진입가 행(호박색)에 가격·수량·현재 PnL을 표시한다.
     """
     lm = build_level_map(results)
     if not lm:
@@ -382,10 +386,13 @@ def generate_price_ladder_svg(results):
         if es["scenarios"]:
             target_price = es["scenarios"][0]["target"]
 
-    # 행 구성: 위 레벨(가격 내림차순) → 현재가 → 아래 레벨(가격 내림차순)
-    rows = [("level", c) for c in sorted(above, key=lambda x: -x["price"])]
-    rows.append(("current", None))
-    rows += [("level", c) for c in sorted(below, key=lambda x: -x["price"])]
+    # 행 구성: 모든 행(레벨/현재가/내 포지션)을 가격 내림차순으로 정렬
+    items = [(c["price"], "level", c) for c in above + below]
+    items.append((price, "current", None))
+    if position and position.get("entry") and position.get("direction") in ("롱", "숏"):
+        items.append((float(position["entry"]), "position", position))
+    items.sort(key=lambda x: -x[0])
+    rows = [(kind, payload) for _, kind, payload in items]
 
     W = 720
     ROW_H = 34
@@ -442,6 +449,26 @@ def generate_price_ladder_svg(results):
                 bx = (LINE_X1 + LINE_X2) / 2 - 50
                 p.append(f'<rect x="{bx:.0f}" y="{ry-10:.1f}" width="100" height="18" rx="9" fill="#16213e" stroke="{bc}" stroke-width="1"/>')
                 p.append(f'<text x="{bx+50:.0f}" y="{ry+3:.1f}" fill="{bc}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">추격 {rtxt}·{grade}</text>')
+            continue
+
+        if kind == "position":
+            # 내 포지션 행 (호박색) — 마지막 입력 1건: 진입가·수량·PnL
+            entry = float(c["entry"])
+            is_long = c.get("direction") == "롱"
+            pcol = "#FFC53D"
+            pnl = ((price - entry) if is_long else (entry - price)) / entry * 100
+            dist = (entry - price) / price * 100
+            p.append(f'<text x="{LINE_X1-10}" y="{ry+1:.1f}" fill="{pcol}" font-size="13" font-family="Inter,sans-serif" text-anchor="end" font-weight="700">{entry:,.1f}</text>')
+            p.append(f'<text x="{LINE_X1-10}" y="{ry+13:.1f}" fill="#777799" font-size="9" font-family="Inter,sans-serif" text-anchor="end">{dist:+.2f}%</text>')
+            p.append(f'<line x1="{LINE_X1}" y1="{ry:.1f}" x2="{LINE_X2}" y2="{ry:.1f}" stroke="{pcol}" stroke-width="1.8" stroke-dasharray="7,3" opacity="0.85"/>')
+            qty_txt = f" · {c['qty']:,.6g}개" if c.get("qty") else ""
+            pnl_col = "#22C55E" if pnl >= 0 else "#EF4444"
+            badge = f"내 {c.get('direction')}{qty_txt} · PnL {pnl:+.2f}%"
+            bw = max(120, 14 + len(badge) * 7)
+            bx = (LINE_X1 + LINE_X2) / 2 - bw / 2
+            p.append(f'<rect x="{bx:.0f}" y="{ry-10:.1f}" width="{bw}" height="19" rx="9" fill="#16213e" stroke="{pcol}" stroke-width="1.2"/>')
+            p.append(f'<text x="{bx+bw/2:.0f}" y="{ry+3.5:.1f}" fill="{pcol}" font-size="10.5" font-family="Inter,sans-serif" text-anchor="middle" font-weight="600">내 {c.get("direction")}{qty_txt} · <tspan fill="{pnl_col}">PnL {pnl:+.2f}%</tspan></text>')
+            p.append(f'<text x="{LINE_X2+8}" y="{ry+4:.1f}" fill="{pcol}" font-size="9.5" font-family="Inter,sans-serif" opacity="0.8">📍 내 포지션</text>')
             continue
 
         lp = c["price"]

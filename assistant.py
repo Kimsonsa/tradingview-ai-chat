@@ -1089,7 +1089,8 @@ if pending_rsi_wave and _active_api_key():
 
     # SVG + 카드 + 종합 판정 생성
     svg_html = generate_wave_svg(rsi_results)
-    ladder_frag = generate_price_ladder_svg(rsi_results)  # 가격 레벨 & 진입 지도
+    # 가격 레벨 & 진입 지도 — 마지막 입력 포지션 1건만 함께 표시
+    ladder_frag = generate_price_ladder_svg(rsi_results, position=sess.get("position"))
     # 파동 맵 HTML 문서에 가격 지도 프래그먼트를 주입 (한 iframe에 함께 렌더)
     if ladder_frag:
         combined_html = svg_html.replace("</body>", ladder_frag + "\n</body>")
