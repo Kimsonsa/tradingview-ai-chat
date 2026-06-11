@@ -445,6 +445,127 @@ def calc_fibonacci(candles, lookback=50):
     return levels
 
 
+def detect_price_structure(candles, lookback=120, pivot_k=3):
+    """스윙 피벗 + 추세선 적합으로 가격 구조 감지 (수렴 삼각형/쐐기/채널/박스).
+
+    비전 모델이 스크린샷에서 봉 좌표를 정밀하게 읽지 못하는 한계를 보완 —
+    패턴 판정을 그림이 아닌 데이터로 계산해 AI 컨텍스트에 제공한다.
+
+    Returns dict | None:
+        label, upper/lower(현재 추세선 값), upper_slope_pct/lower_slope_pct(%/봉),
+        convergence_pct(수렴도), apex_bars(꼭짓점까지 봉 수), pos_in_range(밴드 내 위치 %)
+    """
+    if len(candles) < 30:
+        return None
+    window = candles[-min(lookback, len(candles)):]
+    n = len(window)
+    highs = [c["high"] for c in window]
+    lows = [c["low"] for c in window]
+
+    # 프랙탈 피벗 (좌우 pivot_k봉보다 높은 고점 / 낮은 저점)
+    ph = [(i, highs[i]) for i in range(pivot_k, n - pivot_k)
+          if highs[i] == max(highs[i - pivot_k:i + pivot_k + 1])]
+    pl = [(i, lows[i]) for i in range(pivot_k, n - pivot_k)
+          if lows[i] == min(lows[i - pivot_k:i + pivot_k + 1])]
+    ph, pl = ph[-4:], pl[-4:]   # 최근 스윙 4개씩으로 추세선 적합
+    if len(ph) < 2 or len(pl) < 2:
+        return None
+
+    hx, hy = np.array([p[0] for p in ph]), np.array([p[1] for p in ph])
+    lx, ly = np.array([p[0] for p in pl]), np.array([p[1] for p in pl])
+    hs, hb = np.polyfit(hx, hy, 1)   # 상단(저항) 추세선
+    ls, lb = np.polyfit(lx, ly, 1)   # 하단(지지) 추세선
+
+    cur_i = n - 1
+    upper_now = hs * cur_i + hb
+    lower_now = ls * cur_i + lb
+    width_now = upper_now - lower_now
+    start_i = int(min(hx[0], lx[0]))
+    width_start = (hs * start_i + hb) - (ls * start_i + lb)
+    price = window[-1]["close"]
+    if price <= 0:
+        return None
+
+    # 추세선이 이미 교차 — 수렴이 완료됐거나 전환 구간
+    if width_start <= 0 or width_now <= 0:
+        return {
+            "label": "추세선 교차(수렴 완료·전환 구간)",
+            "upper": round(upper_now, 6), "lower": round(lower_now, 6),
+            "upper_slope_pct": round(hs / price * 100, 3),
+            "lower_slope_pct": round(ls / price * 100, 3),
+            "convergence_pct": None, "apex_bars": None, "pos_in_range": None,
+        }
+
+    hs_pct = hs / price * 100
+    ls_pct = ls / price * 100
+    conv = (1 - width_now / width_start) * 100   # 양수=수렴, 음수=확장
+
+    FLAT = 0.02  # %/봉 — 이 미만 기울기는 수평 취급
+    up_h, dn_h = hs_pct > FLAT, hs_pct < -FLAT
+    up_l, dn_l = ls_pct > FLAT, ls_pct < -FLAT
+    converging = width_now < width_start * 0.8
+    expanding = width_now > width_start * 1.2
+
+    if converging:
+        if dn_h and up_l:
+            label = "수렴 삼각형(대칭)"
+        elif up_l and not (up_h or dn_h):
+            label = "상승 삼각형(상단 수평 + 저점 상승)"
+        elif dn_h and not (up_l or dn_l):
+            label = "하강 삼각형(하단 수평 + 고점 하락)"
+        elif up_h and up_l:
+            label = "상승 쐐기(수렴)"
+        elif dn_h and dn_l:
+            label = "하락 쐐기(수렴)"
+        else:
+            label = "수렴 구조"
+    elif expanding:
+        label = "확장 구조(변동성 확대)"
+    elif up_h and up_l:
+        label = "상승 채널"
+    elif dn_h and dn_l:
+        label = "하락 채널"
+    else:
+        label = "횡보 박스"
+
+    apex = None
+    if converging and abs(hs - ls) > 1e-12:
+        xi = (lb - hb) / (hs - ls)
+        if xi > cur_i:
+            apex = int(xi - cur_i)
+
+    return {
+        "label": label,
+        "upper": round(upper_now, 6), "lower": round(lower_now, 6),
+        "upper_slope_pct": round(hs_pct, 3), "lower_slope_pct": round(ls_pct, 3),
+        "convergence_pct": round(conv, 1),
+        "apex_bars": apex,
+        "pos_in_range": round((price - lower_now) / width_now * 100, 1) if width_now > 0 else None,
+    }
+
+
+def format_price_structure(struct):
+    """가격 구조 dict → 컨텍스트 한 줄"""
+    if not struct:
+        return "N/A (스윙 피벗 부족)"
+    s = (f"{struct['label']} | 상단 추세선 ≈{struct['upper']:,.6g}"
+         f"({struct['upper_slope_pct']:+.2f}%/봉) · 하단 추세선 ≈{struct['lower']:,.6g}"
+         f"({struct['lower_slope_pct']:+.2f}%/봉)")
+    if struct.get("convergence_pct") is not None:
+        s += f" · 수렴도 {struct['convergence_pct']:+.0f}%"
+    if struct.get("apex_bars"):
+        s += f" · 꼭짓점까지 ~{struct['apex_bars']}봉"
+    pos = struct.get("pos_in_range")
+    if pos is not None:
+        if pos > 100:
+            s += f" · ⚡현재가 상단 추세선 돌파 상태(+{pos - 100:.0f}%)"
+        elif pos < 0:
+            s += f" · ⚡현재가 하단 추세선 이탈 상태({pos:.0f}%)"
+        else:
+            s += f" · 밴드 내 위치 {pos:.0f}%"
+    return s
+
+
 def get_market_context(symbol="BTCUSDT", interval_label="1시간"):
     """단일 TF 시장 데이터 컨텍스트 — 멀티 TF 빌더의 단일 케이스 위임"""
     return get_multi_timeframe_context(symbol, [interval_label], interval_label)
@@ -570,6 +691,9 @@ def _build_tf_section(symbol, label, primary_interval):
         for c in recent5
     )
 
+    # 가격 구조 (수렴/쐐기/채널 — 피벗 기반 추세선 계산)
+    struct_str = format_price_structure(detect_price_structure(candles))
+
     is_primary = "(📸 차트 캡쳐 중)" if label == primary_interval else ""
 
     return f"""📊 [{label}] 실시간 데이터 {is_primary} ({symbol}, {kline_source_label()})
@@ -582,6 +706,7 @@ def _build_tf_section(symbol, label, primary_interval):
 📐 ATR(14): {atr_str} | ADX(14): {adx_str}
 💰 VWAP: {vwap_str} | OBV: {obv_str}
 📈 CVD: {cvd_str}
+🔺 가격 구조(피벗 추세선): {struct_str}
 📊 거래량: {last['volume']:.0f} (5봉평균 대비 {vol_ratio}%)
 📋 최근 5봉:
 {candle_str}"""
