@@ -1186,7 +1186,7 @@ if _pos:
                        else _pos.get("margin"))
         _liq = _liq_price(_pos["direction"], _pos["entry"], _pos.get("qty"), _eff_margin)
 
-        pm1, pm2, pm3, pm4, pm5, pm6 = st.columns([1.1, 1.1, 0.9, 0.9, 1.1, 0.4])
+        pm1, pm2, pm3, pm4, pm5, pm6 = st.columns([1.1, 1.1, 0.9, 0.9, 1.1, 0.5])
         pm1.metric(f"🎯 {_pos['direction']} 진입가", f"{_pos['entry']:,.6g}",
                    f"보유 {_fmt_duration(_pos.get('opened_at', ''))}", delta_color="off")
         pm2.metric("현재가", f"{_cur:,.6g}", _pnl_txt)
@@ -1195,10 +1195,13 @@ if _pos:
         pm5.metric("예상 청산가", f"{_liq:,.6g}" if _liq else "-",
                    f"{(_liq - _cur) / _cur * 100:+.1f}%" if _liq else None, delta_color="off")
         with pm6:
-            st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🔄", key=f"pos_refresh_{sess['id']}", help="현재가 즉시 갱신",
                          use_container_width=True):
                 _current_price.clear()
+                st.rerun()
+            if st.button("✏️", key=f"pos_edit_btn_{sess['id']}", help="포지션 수정 패널 열기",
+                         use_container_width=True):
+                st.session_state[f"pos_edit_{sess['id']}"] = True
                 st.rerun()
         if _pos.get("stop") and _pos.get("entry"):
             _hit = ((_pos["direction"] == "롱" and _cur <= _pos["stop"]) or
@@ -1211,7 +1214,7 @@ if _pos:
 
 with st.expander("🎯 포지션 기록 / 리스크 계산기"
                  + (f" — {_pos['direction']} 보유 중" if _pos else " — 미보유"),
-                 expanded=False):
+                 expanded=st.session_state.get(f"pos_edit_{sess['id']}", False)):
     pc1, pc2, pc3, pc4 = st.columns([0.8, 1.2, 1.2, 1.2])
     with pc1:
         _dir = st.selectbox("방향", ["롱", "숏"],
@@ -1296,6 +1299,7 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
                        + (f" · 목표 {_target:,.6g}" if _target else ""))
                 _append_trade_event(sess, evt)
                 _safe_save_session(sess)
+                st.session_state[f"pos_edit_{sess['id']}"] = False
                 st.rerun()
             else:
                 st.toast("⚠️ 진입가를 입력하세요")
@@ -1334,12 +1338,14 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
             })
             sess.pop("position", None)
             _safe_save_session(sess)
+            st.session_state[f"pos_edit_{sess['id']}"] = False
             st.rerun()
     with pb3:
         if st.button("✖ 취소 (기록 없음)", key=f"pos_clear_{sess['id']}", use_container_width=True,
                      disabled=not _pos, help="잘못 입력한 포지션을 기록 없이 제거합니다"):
             sess.pop("position", None)
             _safe_save_session(sess)
+            st.session_state[f"pos_edit_{sess['id']}"] = False
             st.rerun()
 
     # 이 방의 거래 성적 (복기용)
