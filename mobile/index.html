@@ -916,7 +916,7 @@
     <div class="header">
       <button class="header-btn" onclick="showList()" title="뒤로">←</button>
       <div class="header-title" id="detail-title">세션</div>
-      <button class="header-btn" onclick="reanalyzeRsi()" title="RSI 재분석">🌊</button>
+      <button class="header-btn" onclick="reanalyzeRsi()" title="현재 상황 재분석">🌊</button>
       <button class="header-btn" onclick="refreshDetail()" title="새로고침">🔄</button>
     </div>
     <div class="content" id="detail-content"></div>
@@ -1212,7 +1212,7 @@
           </div>`);
         content.scrollTop = content.scrollHeight;
       }
-      showToast('🌊 RSI 재분석 요청됨...');
+      showToast('🌊 현재 상황 재분석 요청됨...');
       try {
         const resp = await fetch(`${SUPABASE_URL}/rest/v1/analysis_jobs`, {
           method: 'POST',

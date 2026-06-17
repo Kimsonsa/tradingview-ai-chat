@@ -1019,9 +1019,9 @@ _QUICK_ITEMS = [
 각 레벨이 어떤 컨플루언스(EMA/VWAP/BB/최근 고저)에서 나왔는지 표기할 것."""),
 ]
 
-# 🌊 RSI 파동 분석 버튼
+# 🌊 현재 상황 분석 버튼 (멀티 TF RSI 파동 엔진)
 with cols[0]:
-    if st.button("🌊 RSI 파동 분석", key="rsi_wave_btn", use_container_width=True):
+    if st.button("🌊 현재 상황 분석", key="rsi_wave_btn", use_container_width=True):
         st.session_state._pending_rsi_wave = True
         st.rerun()
 
@@ -1068,16 +1068,16 @@ if pending_rsi_wave and _active_api_key():
     symbol = sess.get("symbol", "BTCUSDT")
 
     # 사용자 메시지 추가
-    user_prompt = "🌊 RSI 파동 분석"
+    user_prompt = "🌊 현재 상황 분석"
     sess["messages"].append({"role": "user", "content": user_prompt})
     with st.chat_message("user", avatar="👤"):
         st.markdown(user_prompt)
-    st.toast("🌊 RSI 파동 분석 시작 — 데이터 수집 중", icon="🤖")
+    st.toast("🌊 현재 상황 분석 시작 — 데이터 수집 중", icon="🤖")
     _scroll_chat_bottom()
 
     # 데이터 수집 + 분석
     tf_label = " / ".join(WAVE_TIMEFRAMES)
-    with st.spinner(f"🌊 RSI 파동 데이터 수집 중 ({tf_label})..."):
+    with st.spinner(f"🌊 현재 상황 데이터 수집 중 ({tf_label})..."):
         rsi_results = analyze_rsi_wave(symbol)
 
     # 신호 로깅 (가중치 검증용 — best-effort, 실패해도 분석 진행)

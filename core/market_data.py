@@ -220,6 +220,87 @@ def fetch_taker_ratio(symbol="BTCUSDT", period="15m", limit=500):
         return None
 
 
+def _fmt_notional(v):
+    """USDT 명목금액 → 1.2M / 340K 표기"""
+    if v >= 1e6:
+        return f"{v / 1e6:.1f}M"
+    if v >= 1e3:
+        return f"{v / 1e3:.0f}K"
+    return f"{v:.0f}"
+
+
+def analyze_orderbook(symbol="BTCUSDT", depth=1000, band_pct=2.0, bucket_pct=0.12):
+    """현재 호가창(오더북) 스냅샷 분석 — 대기 지정가 벽 + 매수/매도 불균형.
+
+    ⚠️ 실시간 스냅샷이라 백테스트 불가 + 스푸핑(허수주문) 가능 → 참고용.
+    단 호가벽은 구체적 가격이라 레벨 맵과 결합해 '어디서 멈출지' 판단 보조.
+
+    Returns dict | None:
+        {mid, imb_pct(매수우위 %, 양수=매수 두꺼움), ask_walls, bid_walls, label, detail}
+        walls = [{"price", "notional", "dist_pct"}, ...] (큰 순)
+    """
+    url = "https://fapi.binance.com/fapi/v1/depth"
+    try:
+        res = requests.get(url, params={"symbol": symbol, "limit": min(depth, 1000)}, timeout=10)
+        res.raise_for_status()
+        d = res.json()
+        bids = [(float(p), float(q)) for p, q in d.get("bids", [])]
+        asks = [(float(p), float(q)) for p, q in d.get("asks", [])]
+        if not bids or not asks:
+            return None
+    except Exception:
+        return None
+
+    mid = (bids[0][0] + asks[0][0]) / 2
+    lo, hi = mid * (1 - band_pct / 100), mid * (1 + band_pct / 100)
+
+    # band 내 매수/매도 명목 합 → 불균형
+    bid_notional = sum(p * q for p, q in bids if p >= lo)
+    ask_notional = sum(p * q for p, q in asks if p <= hi)
+    tot = bid_notional + ask_notional
+    imb = (bid_notional - ask_notional) / tot * 100 if tot else 0
+
+    # 가격 버킷으로 묶어 큰 벽 탐색
+    bw = mid * bucket_pct / 100
+
+    def walls(levels, within_lo, within_hi, side):
+        buckets = {}
+        for p, q in levels:
+            if not (within_lo <= p <= within_hi):
+                continue
+            key = round(p / bw)
+            buckets[key] = buckets.get(key, 0) + p * q
+        out = [{"price": round(k * bw, 2), "notional": v,
+                "dist_pct": round((k * bw - mid) / mid * 100, 2)}
+               for k, v in buckets.items()]
+        out.sort(key=lambda x: -x["notional"])
+        return out[:3]
+
+    ask_walls = walls(asks, mid, hi, "ask")   # 위쪽 매도벽 = 저항
+    bid_walls = walls(bids, lo, mid, "bid")   # 아래쪽 매수벽 = 지지
+
+    if imb >= 15:
+        label = "매수벽 우위(지지 두꺼움)"
+    elif imb <= -15:
+        label = "매도벽 우위(저항 두꺼움)"
+    else:
+        label = "호가 균형"
+    parts = []
+    if ask_walls:
+        a = ask_walls[0]
+        parts.append(f"최대 저항벽 {a['price']:,.6g}({a['dist_pct']:+.2f}%, {_fmt_notional(a['notional'])})")
+    if bid_walls:
+        b = bid_walls[0]
+        parts.append(f"최대 지지벽 {b['price']:,.6g}({b['dist_pct']:+.2f}%, {_fmt_notional(b['notional'])})")
+    detail = " · ".join(parts) if parts else "뚜렷한 벽 없음"
+
+    return {
+        "mid": round(mid, 6), "imb_pct": round(imb, 1),
+        "ask_walls": ask_walls, "bid_walls": bid_walls,
+        "label": label, "detail": detail,
+    }
+
+
 def analyze_positioning(symbol="BTCUSDT", period="1h"):
     """포지션 쏠림 스냅샷 — 스마트머니 vs 개미 + 테이커 (참고용·미검증).
 

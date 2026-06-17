@@ -2938,6 +2938,18 @@ def format_machine_context(symbol, results):
         below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
         lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
 
+    # 호가벽 (오더북 스냅샷 — 실시간·참고용. 구체 가격이라 레벨 맵과 결합)
+    try:
+        from core.market_data import analyze_orderbook
+        ob = analyze_orderbook(symbol)
+        if ob:
+            lines.append(
+                f"- 호가벽(실시간·스푸핑가능): {ob['label']} "
+                f"(±2% 불균형 {ob['imb_pct']:+.0f}%) — {ob['detail']}"
+            )
+    except Exception:
+        pass
+
     # 포지션 쏠림 (참고용 — 방향 예측력 백테스트 미검증, 스퀴즈/쏠림 인식만)
     try:
         from core.market_data import analyze_positioning
@@ -2950,6 +2962,8 @@ def format_machine_context(symbol, results):
     except Exception:
         pass
 
+    lines.append("※ 호가벽은 실시간 대기주문 위치다(스푸핑 가능). 레벨 맵의 지지/저항과 "
+                 "겹치면 그 레벨의 신뢰가 올라가고, 큰 벽 근처에서는 가격이 멈추거나 흡수되기 쉽다.")
     lines.append("※ 포지션 쏠림은 방향 예측력이 백테스트에서 확인되지 않았다(노이즈). "
                  "진입 근거로 쓰지 말고 스퀴즈·쏠림 상황 인식용으로만 참고하라.")
     lines.append("※ 지지/저항·레벨 질문에는 위 레벨 맵과 정합성을 유지하고, 진입 판단은 위 기계 판정을 "
@@ -2960,7 +2974,7 @@ def format_machine_context(symbol, results):
 def format_rsi_wave_for_ai(symbol, results):
     """분석 결과를 AI에게 보낼 텍스트로 포맷팅 (v2 — 레짐/다이버전스/점수/목표가 포함)"""
     lines = [
-        f"[🌊 RSI 파동 분석 v2] {symbol} — 레짐 기반 멀티 타임프레임 RSI 사이클 분석\n",
+        f"[🌊 현재 상황 분석] {symbol} — 레짐 기반 멀티 타임프레임 RSI 사이클 분석\n",
         "아래 7개 타임프레임의 RSI 사이클 상태를 **시장 레짐별로** 분석해주세요.\n",
     ]
 

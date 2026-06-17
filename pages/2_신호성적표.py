@@ -46,7 +46,7 @@ with st.spinner("통계 로딩 중..."):
 
 ov = stats.get("overall", {})
 if not ov.get("n"):
-    st.info("아직 평가된 신호가 없습니다. 신호는 RSI 파동 분석 시 자동 기록되고, "
+    st.info("아직 평가된 신호가 없습니다. 신호는 현재 상황 분석 시 자동 기록되고, "
             "호라이즌(예: 1시간봉=24h)이 지나면 평가됩니다.")
     st.stop()
 

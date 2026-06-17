@@ -254,7 +254,7 @@ def run_analysis(symbol):
     sess = create_session(symbol=symbol)
     sess["status"] = "report"  # 데스크탑 탭 자동복원에서 제외 (모바일 전용 리포트)
     sess["messages"] = [
-        {"role": "user", "content": "🌊 RSI 파동 분석 (모바일 요청)"},
+        {"role": "user", "content": "🌊 현재 상황 분석 (모바일 요청)"},
         {"role": "assistant", "content": content, "rsi_wave_html": combined},
     ]
     save_session(sess)
