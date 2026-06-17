@@ -2266,8 +2266,12 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
 
     # ── 데이터 프리페치 (병렬) — 펀딩 1회 + TF별 klines/OI 최대 13개 요청을
     # 동시에 받아 총 수집 시간을 '가장 느린 요청 1개' 수준으로 단축 ──
-    with ThreadPoolExecutor(max_workers=13) as ex:
+    with ThreadPoolExecutor(max_workers=15) as ex:
         funding_fut = ex.submit(fetch_funding_premium, symbol)
+        # 호가벽·포지션 쏠림 (심볼 단위 1회, 참고용 — 실패해도 None)
+        from core.market_data import analyze_orderbook, analyze_positioning
+        ob_fut = ex.submit(analyze_orderbook, symbol)
+        pos_fut = ex.submit(analyze_positioning, symbol)
         kline_futs = {tf: ex.submit(fetch_klines, symbol, INTERVAL_MAP[tf], KLINE_WARMUP)
                       for tf in WAVE_TIMEFRAMES if INTERVAL_MAP.get(tf)}
         # fetch_open_interest_hist 는 실패 시 내부에서 None 반환
@@ -2275,6 +2279,14 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
                    for tf, period in TF_OI_PERIOD.items()}
 
         funding_info = funding_fut.result()
+        try:
+            orderbook = ob_fut.result()
+        except Exception:
+            orderbook = None
+        try:
+            positioning = pos_fut.result()
+        except Exception:
+            positioning = None
         kline_data, kline_err = {}, {}
         for tf, fut in kline_futs.items():
             try:
@@ -2300,6 +2312,14 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
             )
         except Exception as e:
             results[tf_label] = {"error": str(e)}
+
+    # 심볼 단위 참고 데이터(호가벽·포지션 쏠림)를 각 TF 결과에 첨부
+    # (펀딩과 동일 패턴 — 읽는 쪽은 아무 TF에서나 1회 꺼내 쓴다)
+    for tf_label in WAVE_TIMEFRAMES:
+        r = results.get(tf_label)
+        if r and not r.get("error"):
+            r["orderbook"] = orderbook
+            r["positioning"] = positioning
 
     # ════════════════════════════════════
     # POST-PROCESSING: 상위 프레임 필터
@@ -2782,6 +2802,19 @@ def generate_summary_text(results):
             lines.append(f"- **펀딩**: {f['label']} ({f['detail']})")
             break
 
+    # ── 호가벽 / 포지션 쏠림 (심볼 단위, 1회 — 참고용) ──
+    _meta = next((results.get(tf) for tf in WAVE_TIMEFRAMES
+                  if results.get(tf) and not results[tf].get("error")), None)
+    if _meta:
+        ob = _meta.get("orderbook")
+        if ob:
+            lines.append(f"- **호가벽**(실시간·참고): {ob['label']} "
+                         f"(±2% 불균형 {ob['imb_pct']:+.0f}%) · {ob['detail']}")
+        pos = _meta.get("positioning")
+        if pos:
+            lines.append(f"- **포지션 쏠림**(참고·미검증): {pos['label']} "
+                         f"(스마트 {pos['smart_ls']} vs 개미 {pos['retail_ls']})")
+
     # ── 핵심 경고 (같은 유형은 TF 묶고, 우선순위 정렬 후 최대 5개) ──
     squeeze_alerts = []     # (tf, dir, core_met)
     bear_flag_tfs = []
@@ -2938,29 +2971,21 @@ def format_machine_context(symbol, results):
         below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
         lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
 
-    # 호가벽 (오더북 스냅샷 — 실시간·참고용. 구체 가격이라 레벨 맵과 결합)
-    try:
-        from core.market_data import analyze_orderbook
-        ob = analyze_orderbook(symbol)
-        if ob:
-            lines.append(
-                f"- 호가벽(실시간·스푸핑가능): {ob['label']} "
-                f"(±2% 불균형 {ob['imb_pct']:+.0f}%) — {ob['detail']}"
-            )
-    except Exception:
-        pass
-
-    # 포지션 쏠림 (참고용 — 방향 예측력 백테스트 미검증, 스퀴즈/쏠림 인식만)
-    try:
-        from core.market_data import analyze_positioning
-        pos = analyze_positioning(symbol)
-        if pos:
-            lines.append(
-                f"- 포지션 쏠림(참고·미검증): {pos['label']} "
-                f"(스마트 L/S {pos['smart_ls']} vs 개미 {pos['retail_ls']}) — {pos['detail']}"
-            )
-    except Exception:
-        pass
+    # 호가벽 / 포지션 쏠림 — analyze_rsi_wave가 results에 붙여둔 값 재사용(중복 fetch 없음)
+    _meta = next((results.get(tf) for tf in ("15분", "1시간", "4시간", "1일")
+                  if results.get(tf) and not results[tf].get("error")), None)
+    ob = _meta.get("orderbook") if _meta else None
+    if ob:
+        lines.append(
+            f"- 호가벽(실시간·스푸핑가능): {ob['label']} "
+            f"(±2% 불균형 {ob['imb_pct']:+.0f}%) — {ob['detail']}"
+        )
+    pos = _meta.get("positioning") if _meta else None
+    if pos:
+        lines.append(
+            f"- 포지션 쏠림(참고·미검증): {pos['label']} "
+            f"(스마트 L/S {pos['smart_ls']} vs 개미 {pos['retail_ls']}) — {pos['detail']}"
+        )
 
     lines.append("※ 호가벽은 실시간 대기주문 위치다(스푸핑 가능). 레벨 맵의 지지/저항과 "
                  "겹치면 그 레벨의 신뢰가 올라가고, 큰 벽 근처에서는 가격이 멈추거나 흡수되기 쉽다.")
@@ -2985,6 +3010,27 @@ def format_rsi_wave_for_ai(symbol, results):
             f = r["funding_analysis"]
             lines.append(f"💸 펀딩/프리미엄(심볼 공통): {f['label']} — {f['detail']}\n")
             break
+
+    # ── 호가벽 / 포지션 쏠림 (심볼 단위 — 참고용) ──
+    _meta = next((results.get(tf) for tf in WAVE_TIMEFRAMES
+                  if results.get(tf) and not results[tf].get("error")), None)
+    if _meta:
+        ob = _meta.get("orderbook")
+        if ob:
+            a = ", ".join(f"{w['price']:,.6g}({w['dist_pct']:+.2f}%,"
+                          f"{w['notional']/1e6:.1f}M)" for w in ob.get("ask_walls", [])[:2])
+            b = ", ".join(f"{w['price']:,.6g}({w['dist_pct']:+.2f}%,"
+                          f"{w['notional']/1e6:.1f}M)" for w in ob.get("bid_walls", [])[:2])
+            lines.append(f"📚 호가벽(실시간 오더북·스푸핑가능): {ob['label']}, ±2% 불균형 {ob['imb_pct']:+.0f}% "
+                         f"(양수=매수벽 두꺼움)")
+            lines.append(f"   저항벽(위): {a or '없음'} / 지지벽(아래): {b or '없음'}")
+            lines.append("   → 호가벽이 레벨 맵의 지지/저항과 겹치면 그 레벨 신뢰가 올라간다. "
+                         "큰 벽 근처는 정체·흡수되기 쉬우니 진입/목표 잡을 때 반영하되, "
+                         "스푸핑 가능성 때문에 단독 근거로 쓰지 말 것.")
+        pos = _meta.get("positioning")
+        if pos:
+            lines.append(f"👥 포지션 쏠림(참고·방향예측력 미검증): {pos['label']} — {pos['detail']}")
+            lines.append("   → 방향 베팅 근거 금지(백테스트상 노이즈). 스퀴즈·쏠림 위험 인식용으로만.\n")
 
     # ── 🧭 기계 판정 (방향 ≠ 즉시진입 — 리포트에 반드시 반영) ──
     ea = assess_entry(results)
