@@ -2938,6 +2938,20 @@ def format_machine_context(symbol, results):
         below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
         lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
 
+    # 포지션 쏠림 (참고용 — 방향 예측력 백테스트 미검증, 스퀴즈/쏠림 인식만)
+    try:
+        from core.market_data import analyze_positioning
+        pos = analyze_positioning(symbol)
+        if pos:
+            lines.append(
+                f"- 포지션 쏠림(참고·미검증): {pos['label']} "
+                f"(스마트 L/S {pos['smart_ls']} vs 개미 {pos['retail_ls']}) — {pos['detail']}"
+            )
+    except Exception:
+        pass
+
+    lines.append("※ 포지션 쏠림은 방향 예측력이 백테스트에서 확인되지 않았다(노이즈). "
+                 "진입 근거로 쓰지 말고 스퀴즈·쏠림 상황 인식용으로만 참고하라.")
     lines.append("※ 지지/저항·레벨 질문에는 위 레벨 맵과 정합성을 유지하고, 진입 판단은 위 기계 판정을 "
                  "1차 기준으로 삼아 답하라. 다른 결론을 내릴 땐 어떤 데이터가 달라졌는지 명시할 것.")
     return "\n\n" + "\n".join(lines)

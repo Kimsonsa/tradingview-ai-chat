@@ -155,6 +155,111 @@ def fetch_open_interest_hist(symbol="BTCUSDT", period="1h", limit=210):
         return None
 
 
+def fetch_long_short_ratio(symbol="BTCUSDT", period="15m", limit=500, kind="global_account"):
+    """Binance Futures 롱/숏 비율 히스토리 (최대 500포인트, period×500 범위).
+
+    kind:
+        "global_account" — 전체 계정 기준 (개미·군중 포지션)
+        "top_account"    — 상위 트레이더 계정 기준
+        "top_position"   — 상위 트레이더 포지션(명목) 기준 (스마트머니, 가장 유의)
+    Returns:
+        list[dict] | None: [{"time", "ls_ratio", "long_pct", "short_pct"}, ...] (오래된→최신)
+    """
+    paths = {
+        "global_account": "globalLongShortAccountRatio",
+        "top_account": "topLongShortAccountRatio",
+        "top_position": "topLongShortPositionRatio",
+    }
+    path = paths.get(kind)
+    if not path:
+        return None
+    url = f"https://fapi.binance.com/futures/data/{path}"
+    params = {"symbol": symbol, "period": period, "limit": min(limit, 500)}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        raw = res.json()
+        if not isinstance(raw, list) or not raw:
+            return None
+        out = [{
+            "time": int(r["timestamp"]),
+            "ls_ratio": float(r["longShortRatio"]),
+            "long_pct": float(r["longAccount"]),
+            "short_pct": float(r["shortAccount"]),
+        } for r in raw]
+        out.sort(key=lambda x: x["time"])
+        return out
+    except Exception:
+        return None
+
+
+def fetch_taker_ratio(symbol="BTCUSDT", period="15m", limit=500):
+    """Binance Futures 테이커(시장가) 매수/매도 거래량 비율 히스토리.
+
+    buy_sell > 1 = 시장가 매수 우위(공격적 매수), < 1 = 매도 우위.
+    Returns:
+        list[dict] | None: [{"time", "buy_sell", "buy_vol", "sell_vol"}, ...] (오래된→최신)
+    """
+    url = "https://fapi.binance.com/futures/data/takerlongshortRatio"
+    params = {"symbol": symbol, "period": period, "limit": min(limit, 500)}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        raw = res.json()
+        if not isinstance(raw, list) or not raw:
+            return None
+        out = [{
+            "time": int(r["timestamp"]),
+            "buy_sell": float(r["buySellRatio"]),
+            "buy_vol": float(r["buyVol"]),
+            "sell_vol": float(r["sellVol"]),
+        } for r in raw]
+        out.sort(key=lambda x: x["time"])
+        return out
+    except Exception:
+        return None
+
+
+def analyze_positioning(symbol="BTCUSDT", period="1h"):
+    """포지션 쏠림 스냅샷 — 스마트머니 vs 개미 + 테이커 (참고용·미검증).
+
+    ⚠️ 백테스트 결과: 방향 예측력은 베이스라인 대비 유의하지 않음(노이즈).
+    따라서 게이트·판정 가중치로 쓰지 말 것. 스퀴즈/쏠림 상황 인식용 보조 정보다.
+
+    Returns dict | None: {smart_ls, retail_ls, gap, taker, label, detail}
+    """
+    smart = fetch_long_short_ratio(symbol, period, 30, "top_position")
+    retail = fetch_long_short_ratio(symbol, period, 30, "global_account")
+    taker = fetch_taker_ratio(symbol, period, 30)
+    if not (smart and retail):
+        return None
+    s_ls = smart[-1]["ls_ratio"]      # 상위 트레이더 포지션 롱/숏
+    r_ls = retail[-1]["ls_ratio"]     # 전체 계정(개미) 롱/숏
+    gap = s_ls / r_ls if r_ls else 1.0
+    tk = taker[-1]["buy_sell"] if taker else None
+
+    # 쏠림/괴리 해석 (방향 예측 아님 — 상황 묘사)
+    if gap >= 1.15:
+        label = "스마트머니 롱 우위(개미보다)"
+        detail = "상위 트레이더가 개미보다 롱에 치우침 — 하단 지지/숏스퀴즈 여지"
+    elif gap <= 0.87:
+        label = "스마트머니 숏 우위(개미보다)"
+        detail = "상위 트레이더가 개미보다 숏에 치우침 — 상단 저항/롱스퀴즈 여지"
+    else:
+        label = "스마트-개미 포지션 유사"
+        detail = "뚜렷한 괴리 없음"
+    if r_ls >= 1.8:
+        detail += " · 개미 롱 과밀(되돌림 시 롱청산 연쇄 주의)"
+    elif r_ls <= 0.7:
+        detail += " · 개미 숏 과밀(반등 시 숏커버 주의)"
+
+    return {
+        "smart_ls": round(s_ls, 2), "retail_ls": round(r_ls, 2),
+        "gap": round(gap, 2), "taker": round(tk, 3) if tk else None,
+        "label": label, "detail": detail,
+    }
+
+
 def fetch_funding_premium(symbol="BTCUSDT"):
     """현재 펀딩비 + 마크/인덱스 프리미엄 스냅샷 (심볼당 1회).
 
