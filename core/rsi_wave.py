@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from core.market_data import (
     fetch_klines, calc_rsi, calc_ema, calc_macd, calc_bollinger,
     calc_stoch_rsi, calc_atr, calc_adx, calc_obv, calc_cvd, calc_vwap,
-    fetch_open_interest_hist, fetch_funding_premium,
+    fetch_open_interest_hist, fetch_funding_premium, volatility_regime,
     INTERVAL_MAP, KLINE_WARMUP,
 )
 
@@ -2061,6 +2061,9 @@ def analyze_tf_snapshot(tf_label, candles, funding_info=None, funding_analysis=N
     atr = calc_atr(candles)
     atr_pct = round(atr / cur * 100, 2) if atr and cur else 0
 
+    # ── 변동성 환경 (백테스트: 1시간 고변동에서 신호 기대값 개선, 5심볼 일관) ──
+    vol_regime = volatility_regime(candles)
+
     # ── ADX ──
     adx, plus_di, minus_di = calc_adx(candles)
 
@@ -2192,6 +2195,7 @@ def analyze_tf_snapshot(tf_label, candles, funding_info=None, funding_analysis=N
         "stoch_d": stoch_d,
         "atr": atr,
         "atr_pct": atr_pct,
+        "vol_regime": vol_regime,
         "adx": adx,
         "plus_di": plus_di,
         "minus_di": minus_di,
@@ -2806,6 +2810,18 @@ def generate_summary_text(results):
             lines.append(f"- **펀딩**: {f['label']} ({f['detail']})")
             break
 
+    # ── 변동성 환경 (1시간 기준 — 검증된 약한 메타규칙) ──
+    r1h = results.get("1시간") or {}
+    vr = r1h.get("vol_regime")
+    if vr:
+        if vr["label"] == "고변동":
+            note = "→ 신호 신뢰 가점 (검증: 1h 고변동에서 기대값 개선, 5심볼 일관)"
+        elif vr["label"] == "저변동":
+            note = "→ 0.8R 목표가 안 닿고 휩쓸리기 쉬움. 진입 보수적·관망 우위"
+        else:
+            note = "→ 중립"
+        lines.append(f"- **변동성 환경**(1시간 ATR% {vr['pct_rank']}분위): {vr['label']} {note}")
+
     # ── 호가벽 / 포지션 쏠림 (심볼 단위, 1회 — 참고용) ──
     _meta = next((results.get(tf) for tf in WAVE_TIMEFRAMES
                   if results.get(tf) and not results[tf].get("error")), None)
@@ -2907,10 +2923,18 @@ def generate_summary_text(results):
     chase_ok = bool(ea and ea.get("chase_ok"))
     _g = "✅" if g15 == "AGREE" else "✖"
 
-    if direction in ("롱", "숏") and chase_ok and best_r >= 1.2:
+    # 변동성 환경(1시간) — 저변동이면 진입 신뢰 한 단계 낮춤(검증된 약한 메타규칙)
+    vr1h = (results.get("1시간") or {}).get("vol_regime")
+    low_vol = vr1h and vr1h.get("label") == "저변동"
+
+    if direction in ("롱", "숏") and chase_ok and best_r >= 1.2 and not low_vol:
         verdict = "🟡 진입 가능 (제한 사이즈)"
         why = (f"{direction} 방향 + 추격 손익비 {best_r}R 확보 — 짧은 목표(0.5~0.8R) 지정가, "
                f"권장 사이즈({ea['position_size']}) 안에서. 게이트 {_g}는 보조 참고.")
+    elif direction in ("롱", "숏") and chase_ok and best_r >= 1.2 and low_vol:
+        verdict = "🟡 조건 충족하나 저변동 — 사이즈 축소"
+        why = (f"{direction} 방향 + 손익비 {best_r}R지만 1시간 저변동(목표 도달 전 휩쓸림 위험, 검증됨) "
+               "— 진입 시 최소 사이즈, 또는 변동성 확대까지 관망")
     elif direction in ("롱", "숏") and best_r >= 1.5:
         verdict = "🟡 기다렸다 쳐라"
         why = (f"방향({direction})은 있으나 현재가 추격은 불리 — 위 시나리오 표의 "
@@ -2969,6 +2993,14 @@ def format_machine_context(symbol, results):
         below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
         lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
 
+    # 변동성 환경 (1시간 — 검증된 약한 메타규칙)
+    vr = (results.get("1시간") or {}).get("vol_regime")
+    if vr:
+        tail = ("신호 신뢰↑(검증: 1h 고변동서 기대값 개선, 5심볼 일관)" if vr["label"] == "고변동"
+                else "목표 도달 전 휩쓸림 위험 → 진입 보수적·관망 우위" if vr["label"] == "저변동"
+                else "중립")
+        lines.append(f"- 변동성 환경(1시간 ATR% {vr['pct_rank']}분위): {vr['label']} — {tail}")
+
     # 호가벽 / 포지션 쏠림 — analyze_rsi_wave가 results에 붙여둔 값 재사용(중복 fetch 없음)
     _meta = next((results.get(tf) for tf in ("15분", "1시간", "4시간", "1일")
                   if results.get(tf) and not results[tf].get("error")), None)
@@ -3008,6 +3040,19 @@ def format_rsi_wave_for_ai(symbol, results):
             f = r["funding_analysis"]
             lines.append(f"💸 펀딩/프리미엄(심볼 공통): {f['label']} — {f['detail']}\n")
             break
+
+    # ── 변동성 환경 (1시간 — 검증된 약한 메타규칙) ──
+    vr = (results.get("1시간") or {}).get("vol_regime")
+    if vr:
+        if vr["label"] == "고변동":
+            t = ("신호 신뢰 가점. 백테스트(6심볼·1시간)상 고변동 환경에서 신호 기대값이 "
+                 "음수→양수로 개선됐고 5심볼 모두 일관. 짧은 목표(0.8R)가 닿을 변동성이 있음.")
+        elif vr["label"] == "저변동":
+            t = ("진입 보수적. 저변동 죽은 장에서는 0.8R 목표가 닿기 전에 횡보·역행으로 휩쓸리기 쉬움. "
+                 "관망 또는 최소 사이즈 권고.")
+        else:
+            t = "중립."
+        lines.append(f"📈 변동성 환경(1시간, ATR% {vr['pct_rank']}분위 → {vr['label']}): {t}\n")
 
     # ── 호가벽 / 포지션 쏠림 (심볼 단위 — 참고용) ──
     _meta = next((results.get(tf) for tf in WAVE_TIMEFRAMES
