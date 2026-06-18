@@ -874,6 +874,12 @@ if st.session_state.viewing_history:
                     _wh = 960 if "진입 지도" in msg["rsi_wave_html"] else 500
                     components.html(msg["rsi_wave_html"], height=_wh, scrolling=False)
                 st.markdown(msg["content"])
+                if msg.get("tf_cards"):
+                    with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
+                        st.markdown(msg["tf_cards"])
+                if msg.get("alert_guide"):
+                    with st.expander("🔔 트레이딩뷰 알람 설정 가이드", expanded=False):
+                        st.markdown(msg["alert_guide"])
 
     else:
         st.error("세션을 찾을 수 없습니다.")
@@ -977,6 +983,12 @@ for msg in sess.get("messages", []):
             components.html(msg["rsi_wave_html"], height=_wh, scrolling=False)
         display = _shorten_prompt(msg["content"]) if msg["role"] == "user" else msg["content"]
         st.markdown(display)
+        if msg.get("tf_cards"):
+            with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
+                st.markdown(msg["tf_cards"])
+        if msg.get("alert_guide"):
+            with st.expander("🔔 트레이딩뷰 알람 설정 가이드", expanded=False):
+                st.markdown(msg["alert_guide"])
         if msg.get("image"):
             st.image(msg["image"], caption="분석한 차트", use_container_width=True)
 
@@ -1136,12 +1148,14 @@ if pending_rsi_wave and _active_api_key():
             ai_response = f"⚠️ AI 분석 오류: {str(e)}"
             st.error(ai_response)
 
-    # 세션에 저장
+    # 세션에 저장 — TF 카드/알람 가이드는 별도 키로 보존(rerun 후 expander 복원용)
     full_content = summary_text + "\n\n" + str(ai_response) if ai_response else summary_text
     sess["messages"].append({
         "role": "assistant",
         "content": full_content,
         "rsi_wave_html": combined_html,
+        "tf_cards": tf_cards,
+        "alert_guide": alert_guide,
     })
     _safe_save_session(sess)
     st.session_state["_toast_done"] = True
