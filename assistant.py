@@ -11,7 +11,7 @@ from core.market_data import get_market_context, get_multi_timeframe_context, pa
 from core.ai_client import analyze_chart, analyze_trade_summary, is_claude_model, CLAUDE_MODELS
 from core.rsi_wave import (
     analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
-    format_machine_context, RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
+    format_machine_context, generate_alert_guide, RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
 )
 from core.rsi_render import (
     generate_wave_svg, generate_price_ladder_svg, generate_tf_cards,
@@ -1098,6 +1098,7 @@ if pending_rsi_wave and _active_api_key():
         combined_html = svg_html
     tf_cards = generate_tf_cards(rsi_results)
     summary_text = generate_summary_text(rsi_results)
+    alert_guide = generate_alert_guide(symbol, rsi_results, position=sess.get("position"))
 
     # AI용 데이터 포맷팅 (+보유 포지션 컨텍스트)
     ai_prompt_text = format_rsi_wave_for_ai(symbol, rsi_results) + _position_context(sess)
@@ -1112,6 +1113,9 @@ if pending_rsi_wave and _active_api_key():
         # 3) 타임프레임별 상세 카드
         with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
             st.markdown(tf_cards)
+        # 3-1) 트레이딩뷰 알람 설정 가이드
+        with st.expander("🔔 트레이딩뷰 알람 설정 가이드", expanded=False):
+            st.markdown(alert_guide)
         st.markdown("---")
         # 4) AI 코멘터리 스트리밍
         st.caption(f"🤖 AI 분석 ({st.session_state.model})")
