@@ -2336,9 +2336,13 @@ def analyze_rsi_wave(symbol="BTCUSDT"):
 
 
 def flow_gate(r):
-    """주문흐름(OBV/CVD 다이버전스) 동의 게이트 — 백테스트 walk-forward 검증 필터.
+    """주문흐름(OBV/CVD 다이버전스) 동의 여부 — 약한 보조 필터.
 
-    15분봉에서 이 게이트 통과 + 목표 0.5R 구조가 검증 승률 71~75%를 기록.
+    그 봉의 신호 방향에 실제 시장가 체결(OBV/CVD 다이버전스)이 동의하는지.
+    ⚠️ walk-forward 재검증(4심볼·게이트무시 베이스라인 대비) 결과: 게이트가
+    더하는 순수 엣지는 +0.6~2.8%p로 노이즈 수준이었다. 과거 '검증 승률 71~75%'는
+    게이트가 아니라 짧은 목표(0.5R) 청산 구조가 만든 값이었다. 따라서 게이트는
+    진입 가부의 결정 기준이 아니라 미세한 신뢰 보조로만 쓴다.
     반환: "AGREE"(동의) | "DISAGREE"(미동의) | None(방향 없음/판정 불가)
     """
     pos = r.get("position")
@@ -2762,19 +2766,19 @@ def generate_summary_text(results):
         gate_state[tf] = (r.get("position"), g)
         gate_parts.append(f"{TF_LABELS_SHORT.get(tf, tf)} {'✅' if g == 'AGREE' else '✖'}")
     if gate_parts:
-        lines.append(f"- **주문흐름 게이트**(OBV/CVD가 신호 방향에 동의): {' · '.join(gate_parts)}")
-        lines.append("  - 읽는 법: ✅ = 그 TF의 신호 방향에 실제 시장 체결(매집/매도)이 따라붙고 있음 → 신뢰↑ · "
-                     "✖ = 신호는 있지만 주문흐름 확인 없음 → 신뢰↓")
+        lines.append(f"- **주문흐름 게이트**(OBV/CVD가 신호 방향에 동의 · 약한 보조): {' · '.join(gate_parts)}")
+        lines.append("  - 읽는 법: ✅ = 그 TF 신호 방향에 실제 시장 체결이 동반 → 미세한 신뢰 가점 · "
+                     "✖ = 주문흐름 확인 없음. ⚠️ 재검증 결과 게이트의 순수 엣지는 노이즈 수준(+1%p 안팎)이라 "
+                     "진입 가부의 결정 기준이 아님 — 승률은 짧은 목표(0.5R) 청산이 만든다.")
 
-        # 핵심 TF별 구체 해석
+        # 핵심 TF별 구체 해석 (보조 정보로만)
         p15, g15 = gate_state.get("15분", (None, None))
         if g15 == "AGREE":
-            lines.append(f"  - ✅ **15분 {p15} — 검증 조합 충족**: {p15} 신호에 "
-                         f"{'매수' if p15 == '롱' else '매도'} 체결이 동반. 백테스트 검증 구간 승률 71~75% 조건 "
-                         "(목표 0.5R 스캘프 · 지정가 진입 기준)")
+            lines.append(f"  - ✅ 15분 {p15}: {p15} 신호에 "
+                         f"{'매수' if p15 == '롱' else '매도'} 체결 동반 — 미세한 신뢰 가점(결정 근거 아님)")
         elif g15 == "DISAGREE":
-            lines.append(f"  - ✖ **15분 {p15} — 검증 조건 미충족**: 신호는 떴지만 주문흐름이 확인해주지 않음. "
-                         "백테스트상 이런 신호의 기대값은 0 이하 → 이 신호 단독으로는 진입하지 말 것")
+            lines.append(f"  - ✖ 15분 {p15}: 주문흐름 미확인 — 신뢰 약간 낮음. 단 이것만으로 "
+                         "진입 금지는 아님(게이트 엣지 자체가 약함)")
         p1h, g1h = gate_state.get("1시간", (None, None))
         if g1h == "AGREE":
             extra = ""
@@ -2892,37 +2896,32 @@ def generate_summary_text(results):
         else:
             notes.append("방향성 없음")
         if p15 == side:
-            if g15 == "AGREE":
-                notes.append("15분 게이트 ✅ → **검증 조건 충족** (0.5R 스캘프 검증 승률 71~75%)")
-            else:
-                notes.append("15분 게이트 ✖ → 검증 조건 미충족 (백테스트 기대값 ≈ 0 이하)")
-        else:
-            notes.append("15분 신호 없음")
+            notes.append("15분 게이트 ✅(보조)" if g15 == "AGREE" else "15분 게이트 ✖(보조)")
         lines.append(f"- **{side}**: {' · '.join(notes)}")
 
-    # 최종 판정
+    # 최종 판정 — 핵심 기준은 방향 정렬 + 즉시진입(추격가부) + 손익비.
+    # 게이트는 결정 요인에서 제외(재검증상 엣지 노이즈). 승률은 짧은 목표(0.5R) 청산이 만든다.
     best_r = 0
     if es and es.get("scenarios"):
         best_r = max((s.get("R") or 0) for s in es["scenarios"])
-    verified = (g15 == "AGREE" and p15 == direction and direction in ("롱", "숏"))
+    chase_ok = bool(ea and ea.get("chase_ok"))
+    _g = "✅" if g15 == "AGREE" else "✖"
 
-    if verified and ea and ea.get("chase_ok"):
-        verdict = "🟢 들어가도 좋다 (제한 사이즈)"
-        why = (f"검증 조합 충족 + 즉시진입 적합 — {direction} 목표 0.5R 지정가, "
-               f"권장 사이즈({ea['position_size']}) 안에서")
-    elif verified:
-        verdict = "🟡 조건부 진입"
-        why = (f"검증 조합({direction})은 충족했으나 즉시진입 점수가 낮음 — "
-               "추격 말고 눌림/반등 레벨 지정가로만, 목표 0.5R")
+    if direction in ("롱", "숏") and chase_ok and best_r >= 1.2:
+        verdict = "🟡 진입 가능 (제한 사이즈)"
+        why = (f"{direction} 방향 + 추격 손익비 {best_r}R 확보 — 짧은 목표(0.5~0.8R) 지정가, "
+               f"권장 사이즈({ea['position_size']}) 안에서. 게이트 {_g}는 보조 참고.")
     elif direction in ("롱", "숏") and best_r >= 1.5:
         verdict = "🟡 기다렸다 쳐라"
-        why = (f"방향({direction})은 있으나 15분 게이트 미충족 — 위 시나리오 표의 "
-               f"{best_r}R 레벨 도달 + 반등실패 확인 시에만 최소 사이즈")
+        why = (f"방향({direction})은 있으나 현재가 추격은 불리 — 위 시나리오 표의 "
+               f"{best_r}R 레벨 도달 + 반등실패 확인 시에만 최소 사이즈, 짧은 목표")
     else:
         verdict = "🔴 쉬어라"
-        why = ("지금은 통계가 편드는 조합이 아님(게이트 미충족/신호 충돌/손익비 불리). "
-               "재평가 트리거: 15분 신호와 게이트가 같은 방향으로 동시 충족될 때")
+        why = ("방향성 약함 또는 손익비 1.5R 미만(신호 충돌·추격 불리). "
+               "재평가 트리거: 방향 정렬이 분명해지고 시나리오 손익비가 확보될 때")
     lines.append(f"- **판정: {verdict}** — {why}")
+    lines.append("  ※ 승률의 핵심 동력은 게이트가 아니라 짧은 목표(0.5~0.8R) 청산 구조다. "
+                 "게이트는 방향 신뢰의 미세 보조로만 본다(재검증상 순수 엣지 노이즈 수준).")
 
     return "\n".join(lines)
 
@@ -2954,15 +2953,14 @@ def format_machine_context(symbol, results):
                      f"즉시진입 {ea['entry_score']}/100, 추격 {'가능' if ea['chase_ok'] else '부적합'})"
                      f" · 권장 사이즈 {ea['position_size']} · 리스크 {ea['risk_level']}")
 
-    # 15분 게이트 — 검증 조건
+    # 주문흐름 게이트 (약한 보조 — 결정 기준 아님)
     r15 = results.get("15분") or {}
     g15 = flow_gate(r15)
     if g15 == "AGREE":
-        lines.append(f"- 검증 조건: 15분 {r15.get('position')} 게이트 ✅ — 백테스트 검증 조합 "
-                     "(0.5R 스캘프 검증 승률 71~75%)")
+        lines.append(f"- 주문흐름 게이트: 15분 {r15.get('position')} ✅(체결 동반) — 미세한 신뢰 가점. "
+                     "단 재검증상 게이트 순수 엣지는 노이즈 수준이라 결정 근거는 아님")
     elif g15 == "DISAGREE":
-        lines.append(f"- 검증 조건: 15분 {r15.get('position')} 게이트 ✖ — 검증 조건 미충족, "
-                     "이 신호 단독 진입 비권장")
+        lines.append(f"- 주문흐름 게이트: 15분 {r15.get('position')} ✖(체결 미확인) — 신뢰 약간 낮음(보조)")
 
     # 핵심 레벨 (컨플루언스 레벨 맵 상하 3개씩)
     lm = build_level_map(results)
@@ -3205,7 +3203,7 @@ def format_rsi_wave_for_ai(symbol, results):
             lines.append(f"⚠️ 경계선: {r['borderline']['msg']}")
         lines.append("")
 
-    # ── 주문흐름 게이트 요약 (백테스트 검증 컨플루언스) ──
+    # ── 주문흐름 게이트 요약 (약한 보조 — 결정 근거 아님) ──
     gate_lines = []
     for tf in WAVE_TIMEFRAMES:
         r = results.get(tf)
@@ -3215,11 +3213,12 @@ def format_rsi_wave_for_ai(symbol, results):
         if g:
             gate_lines.append(f"{tf} {r.get('position')}: {'동의 ✅' if g == 'AGREE' else '미동의 ✖'}")
     if gate_lines:
-        lines.append("🚦 주문흐름 게이트(OBV/CVD 다이버전스의 신호 방향 동의 여부): " + " | ".join(gate_lines))
-        lines.append("   ※ 이 게이트는 백테스트 walk-forward 검증을 거쳤습니다: 15분봉에서 게이트 통과 신호는")
-        lines.append("   짧은 목표(0.5R) 기준 검증 승률 71~75%, 미통과 신호는 기대값이 유의하게 낮았습니다.")
-        lines.append("   따라서 게이트 통과 여부를 신뢰도 판단의 1순위 근거로 사용하고, 미통과 신호로는")
-        lines.append("   적극적 진입을 권하지 마세요. 통과 시에도 긴 목표보다 짧은 목표(0.5~0.8R)가 통계적으로 유리합니다.")
+        lines.append("🚦 주문흐름 게이트(OBV/CVD가 신호 방향에 동의 — 약한 보조): " + " | ".join(gate_lines))
+        lines.append("   ※ walk-forward 재검증(4심볼·게이트무시 베이스라인 대비) 결과 게이트의 순수 엣지는")
+        lines.append("   +1%p 안팎의 노이즈 수준이었습니다. 과거 '검증 승률 71~75%'는 게이트가 아니라")
+        lines.append("   짧은 목표(0.5R) 청산 구조가 만든 값입니다. 따라서 게이트는 방향 신뢰의 미세 보조로만")
+        lines.append("   쓰고, 진입 가부의 1순위 근거로 삼지 마세요. 진입 판단은 방향 정렬·손익비·청산 구조를")
+        lines.append("   우선하고, 승률을 높이려면 긴 목표보다 짧은 목표(0.5~0.8R)가 통계적으로 유리합니다.")
 
     lines.append("위 데이터를 RSI 사이클 이론 v3에 따라 분석해주세요.")
     lines.append("핵심: 각 타임프레임의 **레짐**을 확인하고, 레짐별 RSI 파동 범위에 맞게 판단하세요.")
