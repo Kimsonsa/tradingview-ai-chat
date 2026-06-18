@@ -125,6 +125,10 @@ def run_backtest(symbol, tf_label, total_bars=2000, dedupe=True, progress_cb=Non
             "cvd_div": (r.get("cvd_div") or {}).get("type"),
             "div_v2": (r.get("div_v2") or {}).get("type"),
             "squeeze": (r.get("squeeze_expansion") or {}).get("type"),
+            # 변동성 환경 지표 (거래 환경 필터 검증용)
+            "bb_bw": r.get("bb_bw"),
+            "adx": r.get("adx"),
+            "atr_pct": r.get("atr_pct"),
             "_i": i,  # candles 내 신호 봉 인덱스
         })
 
