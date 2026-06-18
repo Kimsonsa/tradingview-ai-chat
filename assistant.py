@@ -11,7 +11,8 @@ from core.market_data import get_market_context, get_multi_timeframe_context, pa
 from core.ai_client import analyze_chart, analyze_trade_summary, is_claude_model, CLAUDE_MODELS
 from core.rsi_wave import (
     analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
-    format_machine_context, generate_alert_guide, RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
+    format_machine_context, generate_alert_guide, generate_exit_plan_text,
+    RSI_WAVE_SYSTEM_PROMPT, WAVE_TIMEFRAMES,
 )
 from core.rsi_render import (
     generate_wave_svg, generate_price_ladder_svg, generate_tf_cards,
@@ -877,6 +878,9 @@ if st.session_state.viewing_history:
                 if msg.get("tf_cards"):
                     with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
                         st.markdown(msg["tf_cards"])
+                if msg.get("exit_plan"):
+                    with st.expander("💰 스타일별 익절/손절 플랜 (스캘핑·데이·스윙)", expanded=False):
+                        st.markdown(msg["exit_plan"])
                 if msg.get("alert_guide"):
                     with st.expander("🔔 트레이딩뷰 알람 설정 가이드", expanded=False):
                         st.markdown(msg["alert_guide"])
@@ -986,6 +990,9 @@ for msg in sess.get("messages", []):
         if msg.get("tf_cards"):
             with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
                 st.markdown(msg["tf_cards"])
+        if msg.get("exit_plan"):
+            with st.expander("💰 스타일별 익절/손절 플랜 (스캘핑·데이·스윙)", expanded=False):
+                st.markdown(msg["exit_plan"])
         if msg.get("alert_guide"):
             with st.expander("🔔 트레이딩뷰 알람 설정 가이드", expanded=False):
                 st.markdown(msg["alert_guide"])
@@ -1110,10 +1117,16 @@ if pending_rsi_wave and _active_api_key():
         combined_html = svg_html
     tf_cards = generate_tf_cards(rsi_results)
     summary_text = generate_summary_text(rsi_results)
+    exit_plan = generate_exit_plan_text(rsi_results, position=sess.get("position"))
     alert_guide = generate_alert_guide(symbol, rsi_results, position=sess.get("position"))
 
-    # AI용 데이터 포맷팅 (+보유 포지션 컨텍스트)
-    ai_prompt_text = format_rsi_wave_for_ai(symbol, rsi_results) + _position_context(sess)
+    # AI용 데이터 포맷팅 (+익절 플랜 + 보유 포지션 컨텍스트)
+    ai_prompt_text = (format_rsi_wave_for_ai(symbol, rsi_results)
+                      + "\n\n" + exit_plan
+                      + "\n위 스타일별 익절/손절 플랜을 참고해, 익절·손절을 논할 땐 스캘핑/데이/스윙을 "
+                      "구분해 제시하라. 짧은 목표만 강요하지 말고 사용자가 스타일을 고르게 하되, "
+                      "각 스타일의 통계적 트레이드오프(짧은=고승률·저수익, 긴=저승률·고수익)를 정직히 밝혀라."
+                      + _position_context(sess))
 
     # AI 분석 스트리밍
     with st.chat_message("assistant", avatar="🤖"):
@@ -1125,7 +1138,10 @@ if pending_rsi_wave and _active_api_key():
         # 3) 타임프레임별 상세 카드
         with st.expander("📋 타임프레임별 상세 데이터", expanded=False):
             st.markdown(tf_cards)
-        # 3-1) 트레이딩뷰 알람 설정 가이드
+        # 3-1) 스타일별 익절/손절 플랜
+        with st.expander("💰 스타일별 익절/손절 플랜 (스캘핑·데이·스윙)", expanded=False):
+            st.markdown(exit_plan)
+        # 3-2) 트레이딩뷰 알람 설정 가이드
         with st.expander("🔔 트레이딩뷰 알람 설정 가이드", expanded=False):
             st.markdown(alert_guide)
         st.markdown("---")
@@ -1155,6 +1171,7 @@ if pending_rsi_wave and _active_api_key():
         "content": full_content,
         "rsi_wave_html": combined_html,
         "tf_cards": tf_cards,
+        "exit_plan": exit_plan,
         "alert_guide": alert_guide,
     })
     _safe_save_session(sess)

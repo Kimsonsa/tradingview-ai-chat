@@ -2680,6 +2680,125 @@ def _format_scenarios_md(es):
     return "\n".join(rows)
 
 
+def build_exit_plan(results, position=None):
+    """스타일별(스캘핑/데이/스윙) 익절·손절 플랜 산출.
+
+    시스템이 단 하나의 짧은 목표만 강요하던 문제를 해결 — 트레이딩 스타일에
+    따라 목표·손절·예상시간·통계특성을 나눠 제시한다. 진입 기준가는 보유
+    포지션이 있으면 그 진입가, 없으면 현재가. 레버리지 ROE 환산 포함.
+
+    Returns dict | None: {direction, entry, leverage, plans:[...]}
+    """
+    ea = assess_entry(results)
+    lm = build_level_map(results)
+    if not ea or not lm or ea["direction"] == "중립":
+        return None
+    direction = ea["direction"]
+    price = lm["ref_price"]
+    entry = float(position["entry"]) if (position and position.get("entry")) else price
+    is_short = direction == "숏"
+    rref = results.get(ea.get("ref_tf")) or results.get("1시간") or {}
+    atr = rref.get("atr") or price * 0.005
+
+    # 방향에 맞는 목표 레벨 (숏=아래 지지, 롱=위 저항), 진입 기준 정렬
+    if is_short:
+        cands = [c["price"] for c in lm["below"] if c["price"] < entry]
+    else:
+        cands = [c["price"] for c in lm["above"] if c["price"] > entry]
+    cands = sorted(cands, key=lambda p: abs(p - entry))  # 가까운→먼
+
+    def pct(t):
+        return abs(t - entry) / entry * 100 if entry else 0
+
+    def _toward(p):
+        return (entry - p) if is_short else (entry + p)
+
+    # 스타일별 목표 — 적정 가격% 밴드 안의 가장 가까운 레벨, 없으면 밴드 대표값 합성
+    # (레벨맵에 해당 밴드 레벨이 없을 때 먼 레벨로 튀는 것 방지 → R·노트 정합 유지)
+    def pick(lo, hi, synth_pct):
+        inband = [t for t in cands if lo <= pct(t) < hi]
+        if inband:
+            return min(inband, key=lambda t: abs(t - entry))
+        return _toward(entry * synth_pct / 100)
+
+    scalp_t = pick(0.3, 1.5, 0.8)
+    day_t = pick(1.5, 4.0, 2.5)
+    # 스윙: 4% 이상 가장 먼 레벨, 없으면 8% 합성 (단 과도하지 않게 4~15% 클램프)
+    far = [t for t in cands if pct(t) >= 4]
+    swing_t = max(far, key=lambda t: abs(t - entry)) if far else _toward(entry * 8 / 100)
+    if pct(swing_t) > 15:  # 너무 먼 주봉 레벨이면 12%로 캡
+        swing_t = _toward(entry * 12 / 100)
+
+    # 레버리지 추정 (격리 증거금 기준. 교차/미입력은 None → 환산 예시로)
+    lev = None
+    if position and position.get("qty") and position.get("margin") and position.get("margin_mode") != "교차":
+        notional = entry * float(position["qty"])
+        m = float(position["margin"])
+        if m > 0:
+            lev = round(notional / m, 1)
+
+    styles = [
+        ("스캘핑", scalp_t, 1.0, "분~시간", "고승률·저수익 — 빠른 회전 (백테스트상 짧은 목표가 통계 유리)"),
+        ("데이트레이딩", day_t, 1.8, "시간~1일", "균형 — 추세 한 구간을 노림"),
+        ("스윙", swing_t, 3.0, "며칠~몇주", "저승률·고수익 — 큰 추세 한 방, 손절·되돌림을 견뎌야"),
+    ]
+    plans = []
+    for name, tgt, atr_mult, dur, note in styles:
+        if tgt is None:
+            continue
+        stop = (entry + atr * atr_mult) if is_short else (entry - atr * atr_mult)
+        reward, risk = abs(tgt - entry), abs(stop - entry)
+        plans.append({
+            "style": name,
+            "target": round(tgt, 1), "stop": round(stop, 1),
+            "R": round(reward / risk, 2) if risk else None,
+            "price_pct": round(pct(tgt), 2),
+            "stop_pct": round(abs(stop - entry) / entry * 100, 2) if entry else 0,
+            "duration": dur, "note": note,
+        })
+    return {"direction": direction, "entry": round(entry, 1), "leverage": lev, "plans": plans}
+
+
+def generate_exit_plan_text(results, position=None):
+    """스타일별 익절/손절 플랜 → 마크다운 (레버리지 ROE 환산 포함)"""
+    ep = build_exit_plan(results, position)
+    if not ep or not ep["plans"]:
+        return "방향성이 불분명해 익절/손절 플랜을 산출할 수 없습니다(중립)."
+    d = ep["direction"]
+    entry = ep["entry"]
+    lev = ep["leverage"]
+    held = bool(position and position.get("entry"))
+
+    L = ["## 💰 스타일별 익절 / 손절 플랜"]
+    base = f"보유 진입가 **{entry:,.6g}**" if held else f"현재가 **{entry:,.6g}** 기준(가정)"
+    L.append(f"> {d} · {base}. 트레이딩 스타일에 따라 목표가 다릅니다 — "
+             "**짧은 목표=고승률·저수익, 긴 목표=저승률·고수익**(검증된 트레이드오프). 본인 스타일을 고르세요.")
+    if lev:
+        L.append(f"> 현재 포지션 레버리지 ≈ **{lev}x** → 가격 1% = ROE {lev:.0f}%.")
+    else:
+        L.append("> ROE = 가격% × 레버리지. 아래 환산은 5x / 10x / 20x 예시입니다.")
+
+    L.append("\n| 스타일 | 목표 | 손절 | 손익비 | 가격수익 | ROE 환산 | 예상시간 |")
+    L.append("|---|---|---|---|---|---|---|")
+    for p in ep["plans"]:
+        if lev:
+            roe = f"**+{p['price_pct'] * lev:.0f}%** ({lev:.0f}x)"
+        else:
+            roe = f"5x +{p['price_pct']*5:.0f}% / 10x +{p['price_pct']*10:.0f}% / 20x +{p['price_pct']*20:.0f}%"
+        rtxt = f"{p['R']}R" if p["R"] is not None else "-"
+        L.append(f"| **{p['style']}** | {p['target']:,.6g} | {p['stop']:,.6g} | {rtxt} | "
+                 f"+{p['price_pct']:.2f}% | {roe} | {p['duration']} |")
+
+    L.append("\n**스타일별 주의:**")
+    for p in ep["plans"]:
+        L.append(f"- **{p['style']}**: {p['note']} · 손절 폭 {p['stop_pct']:.2f}%")
+    L.append("\n> 💡 ‘20% 수익’이 목표라면: 레버리지를 고려하세요. 예컨대 데이트레이딩 목표(가격 "
+             f"{ep['plans'][min(1,len(ep['plans'])-1)]['price_pct']:.1f}%)에 적정 레버리지만 써도 ROE 20%대가 "
+             "나옵니다 — 큰 가격 움직임을 무리하게 기다리는 것보다 통계적으로 유리합니다. "
+             "단 레버리지는 손실·청산 위험도 같은 배수로 키웁니다.")
+    return "\n".join(L)
+
+
 def generate_alert_guide(symbol, results, position=None):
     """분석 결과 → 트레이딩뷰 알람 설정 지침 (복붙 메시지 포함).
 

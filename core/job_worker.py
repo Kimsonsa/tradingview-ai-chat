@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from core.session_manager import _get_conn, save_session, create_session
 from core.rsi_wave import (
     analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
-    generate_alert_guide, RSI_WAVE_SYSTEM_PROMPT,
+    generate_alert_guide, generate_exit_plan_text, RSI_WAVE_SYSTEM_PROMPT,
 )
 from core.rsi_render import generate_wave_svg, generate_price_ladder_svg
 from core.ai_client import analyze_chart, is_claude_model
@@ -245,10 +245,16 @@ def _build_rsi_report(symbol, history=None):
             ai_text = f"⚠️ AI 분석 오류: {e}"
 
     try:
+        exit_plan = generate_exit_plan_text(results)
+    except Exception:
+        exit_plan = ""
+    try:
         alert_guide = generate_alert_guide(symbol, results)
     except Exception:
         alert_guide = ""
     content = summary + ("\n\n" + ai_text if ai_text else "")
+    if exit_plan:
+        content += "\n\n---\n\n" + exit_plan
     if alert_guide:
         content += "\n\n---\n\n" + alert_guide
     return content, combined
