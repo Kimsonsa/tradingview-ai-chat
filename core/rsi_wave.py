@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from core.market_data import (
     fetch_klines, calc_rsi, calc_ema, calc_macd, calc_bollinger,
     calc_stoch_rsi, calc_atr, calc_adx, calc_obv, calc_cvd, calc_vwap,
-    fetch_open_interest_hist, fetch_funding_premium,
+    fetch_open_interest_hist, fetch_funding_premium, volatility_regime,
     INTERVAL_MAP, KLINE_WARMUP,
 )
 
@@ -2061,6 +2061,9 @@ def analyze_tf_snapshot(tf_label, candles, funding_info=None, funding_analysis=N
     atr = calc_atr(candles)
     atr_pct = round(atr / cur * 100, 2) if atr and cur else 0
 
+    # ── 변동성 환경 (백테스트: 1시간 고변동에서 신호 기대값 개선, 5심볼 일관) ──
+    vol_regime = volatility_regime(candles)
+
     # ── ADX ──
     adx, plus_di, minus_di = calc_adx(candles)
 
@@ -2192,6 +2195,7 @@ def analyze_tf_snapshot(tf_label, candles, funding_info=None, funding_analysis=N
         "stoch_d": stoch_d,
         "atr": atr,
         "atr_pct": atr_pct,
+        "vol_regime": vol_regime,
         "adx": adx,
         "plus_di": plus_di,
         "minus_di": minus_di,
@@ -2676,6 +2680,83 @@ def _format_scenarios_md(es):
     return "\n".join(rows)
 
 
+def generate_alert_guide(symbol, results, position=None):
+    """분석 결과 → 트레이딩뷰 알람 설정 지침 (복붙 메시지 포함).
+
+    프로그램이 직접 알람을 못 거니, 사용자가 TradingView에 걸 알람을
+    구체 가격·조건·복붙 메시지로 안내한다. 레벨 맵/시나리오/포지션 기반.
+    """
+    lm = build_level_map(results)
+    if not lm:
+        return "현재 알람 가이드를 만들 레벨 데이터가 부족합니다."
+    es = build_entry_scenarios(results)
+    ea = assess_entry(results)
+    price = lm["ref_price"]
+    direction = ea["direction"] if ea else "중립"
+    sym = symbol.replace("USDT", "USDT.P")  # TradingView 무기한 심볼 표기 안내용
+    vr = (results.get("1시간") or {}).get("vol_regime")
+
+    def arrow(target):
+        return "위로 ↑(Crossing Up)" if target > price else "아래로 ↓(Crossing Down)"
+
+    L = []
+    L.append("## 🔔 트레이딩뷰 알람 설정 가이드")
+    L.append(f"> 현재가 **{price:,.6g}** 기준. 차트에서 **Alt+A**(또는 가격 우클릭 → Add alert)로 "
+             "각 가격에 알람을 거세요. Condition = 해당 가격 **Crossing**, Options = **Once Per Bar Close** 권장.")
+    if vr and vr["label"] == "저변동":
+        L.append("> ⚠️ 지금은 **1시간 저변동** — 알람이 떠도 목표 도달 전 휩쓸리기 쉽습니다. 추격보다 확인 후 진입.")
+
+    # ── 진입 트리거 (유효 시나리오: 부적합 제외, 현재가 추격 제외) ──
+    valid = [s for s in (es["scenarios"] if es else [])
+             if s["grade"] not in ("부적합", "산출불가") and s["label"] != "현재가 추격"]
+    if valid:
+        L.append(f"\n### 🎯 진입 트리거 ({direction} 방향)")
+        for s in valid[:3]:
+            L.append(f"- **{s['entry']:,.6g}** {arrow(s['entry'])} 교차 — {s['label']} ({s['R']}R·{s['grade']})")
+            L.append(f"  - 복붙 메시지: `{sym} {s['entry']:,.6g} {direction} 진입검토 — "
+                     f"{s['label']}, 손절 {s['stop']:,.6g} 목표 {s['target']:,.6g} ({s['R']}R)`")
+            L.append(f"  - 알람 뜨면: 이 레벨에서 {direction} 진입 신호(반등/눌림 실패) 확인 후 진입. "
+                     f"손절 {s['stop']:,.6g} / 목표 {s['target']:,.6g}.")
+    else:
+        L.append(f"\n### 🎯 진입 트리거\n- 현재 손익비 1R 이상 유효 시나리오 없음 — 진입 알람보다 아래 핵심 레벨 관찰 알람 위주로.")
+
+    # ── 핵심 레벨 (컨플루언스 ⭐ = n>=3 우선) ──
+    res_levels = [c for c in lm["above"] if c["n"] >= 2][:3]
+    sup_levels = [c for c in lm["below"] if c["n"] >= 2][:3]
+    L.append("\n### 📐 핵심 레벨 관찰 알람")
+    for c in res_levels:
+        star = "⭐" if c["n"] >= 3 else ""
+        L.append(f"- 저항 **{c['price']:,.6g}**{star} ↑교차 — {', '.join(c['labels'][:2])} 돌파/반응 관찰")
+    for c in sup_levels:
+        star = "⭐" if c["n"] >= 3 else ""
+        L.append(f"- 지지 **{c['price']:,.6g}**{star} ↓교차 — {', '.join(c['labels'][:2])} 이탈/지지 관찰")
+
+    # ── 무효화 알람 ──
+    if direction == "숏" and lm["above"]:
+        inval = max(c["price"] for c in lm["above"][:3])
+        L.append(f"\n### ⛔ 시나리오 무효화\n- **{inval:,.6g}** ↑교차·안착 시 현재 숏 관점 폐기 → 재평가")
+    elif direction == "롱" and lm["below"]:
+        inval = min(c["price"] for c in lm["below"][:3])
+        L.append(f"\n### ⛔ 시나리오 무효화\n- **{inval:,.6g}** ↓교차·안착 시 현재 롱 관점 폐기 → 재평가")
+
+    # ── 보유 포지션 알람 ──
+    if position and position.get("entry"):
+        L.append("\n### 💼 내 포지션 알람")
+        pdir = position.get("direction")
+        if position.get("stop"):
+            L.append(f"- 손절 **{position['stop']:,.6g}** 교차 — 손절 실행 "
+                     f"(복붙: `{sym} 손절 {position['stop']:,.6g} {pdir} 청산`)")
+        if position.get("target"):
+            L.append(f"- 목표 **{position['target']:,.6g}** 교차 — 익절 검토 "
+                     f"(복붙: `{sym} 목표 {position['target']:,.6g} {pdir} 익절`)")
+        if position.get("liq"):
+            L.append(f"- ⚠️ 청산가 **{position['liq']:,.6g}** 근처 — 위험 경보용 알람 권장")
+
+    L.append("\n> 💡 알람 메시지 끝에 본인 메모를 덧붙이면 알림에서 바로 맥락이 보입니다. "
+             "가격은 분석 시점 기준이라, 시간이 지나면 현재 상황 분석을 다시 돌려 갱신하세요.")
+    return "\n".join(L)
+
+
 def generate_summary_text(results):
     """RSI 파동 종합 판정 — 간결 스캔형 (관점별 포지션 + 레짐 + 핵심 경고)"""
     lines = ["### 📊 종합 판정"]
@@ -2806,6 +2887,18 @@ def generate_summary_text(results):
             lines.append(f"- **펀딩**: {f['label']} ({f['detail']})")
             break
 
+    # ── 변동성 환경 (1시간 기준 — 검증된 약한 메타규칙) ──
+    r1h = results.get("1시간") or {}
+    vr = r1h.get("vol_regime")
+    if vr:
+        if vr["label"] == "고변동":
+            note = "→ 신호 신뢰 가점 (검증: 1h 고변동에서 기대값 개선, 5심볼 일관)"
+        elif vr["label"] == "저변동":
+            note = "→ 0.8R 목표가 안 닿고 휩쓸리기 쉬움. 진입 보수적·관망 우위"
+        else:
+            note = "→ 중립"
+        lines.append(f"- **변동성 환경**(1시간 ATR% {vr['pct_rank']}분위): {vr['label']} {note}")
+
     # ── 호가벽 / 포지션 쏠림 (심볼 단위, 1회 — 참고용) ──
     _meta = next((results.get(tf) for tf in WAVE_TIMEFRAMES
                   if results.get(tf) and not results[tf].get("error")), None)
@@ -2907,10 +3000,18 @@ def generate_summary_text(results):
     chase_ok = bool(ea and ea.get("chase_ok"))
     _g = "✅" if g15 == "AGREE" else "✖"
 
-    if direction in ("롱", "숏") and chase_ok and best_r >= 1.2:
+    # 변동성 환경(1시간) — 저변동이면 진입 신뢰 한 단계 낮춤(검증된 약한 메타규칙)
+    vr1h = (results.get("1시간") or {}).get("vol_regime")
+    low_vol = vr1h and vr1h.get("label") == "저변동"
+
+    if direction in ("롱", "숏") and chase_ok and best_r >= 1.2 and not low_vol:
         verdict = "🟡 진입 가능 (제한 사이즈)"
         why = (f"{direction} 방향 + 추격 손익비 {best_r}R 확보 — 짧은 목표(0.5~0.8R) 지정가, "
                f"권장 사이즈({ea['position_size']}) 안에서. 게이트 {_g}는 보조 참고.")
+    elif direction in ("롱", "숏") and chase_ok and best_r >= 1.2 and low_vol:
+        verdict = "🟡 조건 충족하나 저변동 — 사이즈 축소"
+        why = (f"{direction} 방향 + 손익비 {best_r}R지만 1시간 저변동(목표 도달 전 휩쓸림 위험, 검증됨) "
+               "— 진입 시 최소 사이즈, 또는 변동성 확대까지 관망")
     elif direction in ("롱", "숏") and best_r >= 1.5:
         verdict = "🟡 기다렸다 쳐라"
         why = (f"방향({direction})은 있으나 현재가 추격은 불리 — 위 시나리오 표의 "
@@ -2969,6 +3070,14 @@ def format_machine_context(symbol, results):
         below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
         lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
 
+    # 변동성 환경 (1시간 — 검증된 약한 메타규칙)
+    vr = (results.get("1시간") or {}).get("vol_regime")
+    if vr:
+        tail = ("신호 신뢰↑(검증: 1h 고변동서 기대값 개선, 5심볼 일관)" if vr["label"] == "고변동"
+                else "목표 도달 전 휩쓸림 위험 → 진입 보수적·관망 우위" if vr["label"] == "저변동"
+                else "중립")
+        lines.append(f"- 변동성 환경(1시간 ATR% {vr['pct_rank']}분위): {vr['label']} — {tail}")
+
     # 호가벽 / 포지션 쏠림 — analyze_rsi_wave가 results에 붙여둔 값 재사용(중복 fetch 없음)
     _meta = next((results.get(tf) for tf in ("15분", "1시간", "4시간", "1일")
                   if results.get(tf) and not results[tf].get("error")), None)
@@ -3008,6 +3117,19 @@ def format_rsi_wave_for_ai(symbol, results):
             f = r["funding_analysis"]
             lines.append(f"💸 펀딩/프리미엄(심볼 공통): {f['label']} — {f['detail']}\n")
             break
+
+    # ── 변동성 환경 (1시간 — 검증된 약한 메타규칙) ──
+    vr = (results.get("1시간") or {}).get("vol_regime")
+    if vr:
+        if vr["label"] == "고변동":
+            t = ("신호 신뢰 가점. 백테스트(6심볼·1시간)상 고변동 환경에서 신호 기대값이 "
+                 "음수→양수로 개선됐고 5심볼 모두 일관. 짧은 목표(0.8R)가 닿을 변동성이 있음.")
+        elif vr["label"] == "저변동":
+            t = ("진입 보수적. 저변동 죽은 장에서는 0.8R 목표가 닿기 전에 횡보·역행으로 휩쓸리기 쉬움. "
+                 "관망 또는 최소 사이즈 권고.")
+        else:
+            t = "중립."
+        lines.append(f"📈 변동성 환경(1시간, ATR% {vr['pct_rank']}분위 → {vr['label']}): {t}\n")
 
     # ── 호가벽 / 포지션 쏠림 (심볼 단위 — 참고용) ──
     _meta = next((results.get(tf) for tf in WAVE_TIMEFRAMES

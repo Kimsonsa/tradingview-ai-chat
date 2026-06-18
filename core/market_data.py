@@ -468,6 +468,46 @@ def calc_atr(candles, period=14):
     return round(atr, 2)
 
 
+def volatility_regime(candles, period=14, lookback=200):
+    """현재 변동성 환경 — ATR%를 최근 lookback봉 분포에서 백분위로 분류.
+
+    심볼·TF마다 평상시 ATR%가 다르므로(BTC vs DOGE) 절대값이 아닌
+    '자기 자신의 최근 분포 대비 어디인가'로 정규화한다.
+    백테스트(6심볼·1시간): 고변동(상위33%)에서 신호 기대값이 5/5 일관 개선.
+
+    Returns dict | None: {atr_pct, pct_rank(0~100), label}
+        label: "고변동" | "중간" | "저변동"
+    """
+    if len(candles) < period + 5:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i - 1]["close"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    if len(trs) < period:
+        return None
+    # ATR% 시계열 (SMA(period) of TR / close) — 백분위 산정용
+    atr_series = []
+    closes = [c["close"] for c in candles[1:]]
+    for i in range(period - 1, len(trs)):
+        atr = sum(trs[i - period + 1:i + 1]) / period
+        c = closes[i]
+        if c > 0:
+            atr_series.append(atr / c * 100)
+    if len(atr_series) < 10:
+        return None
+    ref = atr_series[-lookback:]
+    cur = atr_series[-1]
+    rank = sum(1 for v in ref if v <= cur) / len(ref) * 100
+    if rank >= 67:
+        label = "고변동"
+    elif rank <= 33:
+        label = "저변동"
+    else:
+        label = "중간"
+    return {"atr_pct": round(cur, 3), "pct_rank": round(rank), "label": label}
+
+
 def calc_adx(candles, period=14):
     """ADX (Average Directional Index) — 추세 강도 (25 이상 = 추세, 미만 = 횡보)"""
     if len(candles) < period * 2 + 1:
