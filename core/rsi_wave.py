@@ -2700,36 +2700,54 @@ def build_exit_plan(results, position=None):
     rref = results.get(ea.get("ref_tf")) or results.get("1시간") or {}
     atr = rref.get("atr") or price * 0.005
 
-    # 방향에 맞는 목표 레벨 (숏=아래 지지, 롱=위 저항), 진입 기준 정렬
+    # 방향에 맞는 클러스터 (숏=아래 지지가 목표·위 저항이 손절 / 롱은 반대)
     if is_short:
-        cands = [c["price"] for c in lm["below"] if c["price"] < entry]
+        tgt_cl = sorted([c for c in lm["below"] if c["price"] < entry], key=lambda c: abs(c["price"] - entry))
+        stop_cl = sorted([c for c in lm["above"] if c["price"] > entry], key=lambda c: abs(c["price"] - entry))
     else:
-        cands = [c["price"] for c in lm["above"] if c["price"] > entry]
-    cands = sorted(cands, key=lambda p: abs(p - entry))  # 가까운→먼
+        tgt_cl = sorted([c for c in lm["above"] if c["price"] > entry], key=lambda c: abs(c["price"] - entry))
+        stop_cl = sorted([c for c in lm["below"] if c["price"] < entry], key=lambda c: abs(c["price"] - entry))
 
-    def pct(t):
-        return abs(t - entry) / entry * 100 if entry else 0
+    def pct(p):
+        return abs(p - entry) / entry * 100 if entry else 0
 
-    def _toward(p):
-        return (entry - p) if is_short else (entry + p)
+    def _toward(off):
+        return (entry - off) if is_short else (entry + off)
 
-    # 스타일별 목표 — 적정 가격% 밴드 안의 가장 가까운 레벨, 없으면 밴드 대표값 합성
-    # (레벨맵에 해당 밴드 레벨이 없을 때 먼 레벨로 튀는 것 방지 → R·노트 정합 유지)
-    def pick(lo, hi, synth_pct):
-        inband = [t for t in cands if lo <= pct(t) < hi]
+    def _basis(c):
+        return "·".join(c["labels"][:3]) + ("⭐" if c["n"] >= 3 else "")
+
+    # 목표 — 밴드 내 가장 가까운 컨플루언스. 없으면 ATR 추정(근거 None)
+    def pick_target(lo, hi, synth_pct):
+        inband = [c for c in tgt_cl if lo <= pct(c["price"]) < hi]
         if inband:
-            return min(inband, key=lambda t: abs(t - entry))
-        return _toward(entry * synth_pct / 100)
+            c = min(inband, key=lambda c: abs(c["price"] - entry))
+            return c["price"], _basis(c)
+        return _toward(entry * synth_pct / 100), None
 
-    scalp_t = pick(0.3, 1.5, 0.8)
-    day_t = pick(1.5, 4.0, 2.5)
-    # 스윙: 4% 이상 가장 먼 레벨, 없으면 8% 합성 (단 과도하지 않게 4~15% 클램프)
-    far = [t for t in cands if pct(t) >= 4]
-    swing_t = max(far, key=lambda t: abs(t - entry)) if far else _toward(entry * 8 / 100)
-    if pct(swing_t) > 15:  # 너무 먼 주봉 레벨이면 12%로 캡
-        swing_t = _toward(entry * 12 / 100)
+    # 손절 — 진입 역방향 구조 레벨(무효화 지점). 스타일별 최소 폭(ATR 배수) 차등:
+    # 보유가 길수록 손절을 넓게(노이즈에 안 털리게). 최소 폭 너머 가장 가까운 레벨.
+    def pick_stop(min_mult):
+        floor = atr * min_mult
+        valid = [c for c in stop_cl if abs(c["price"] - entry) >= floor]
+        if valid:
+            c = min(valid, key=lambda c: abs(c["price"] - entry))
+            return c["price"], _basis(c)
+        return ((entry + floor) if is_short else (entry - floor)), None
 
-    # 레버리지 추정 (격리 증거금 기준. 교차/미입력은 None → 환산 예시로)
+    far = [c for c in tgt_cl if pct(c["price"]) >= 4]
+    swing_c = max(far, key=lambda c: abs(c["price"] - entry)) if far else None
+
+    specs = [
+        ("스캘핑", pick_target(0.3, 1.5, 0.8), pick_stop(1.0), "분~시간",
+         "1차 지지에서 단기 반등 수급이 들어오기 전에 회수", "빠른 회전·고승률(짧은 목표가 통계 유리)"),
+        ("데이트레이딩", pick_target(1.5, 4.0, 2.5), pick_stop(2.0), "시간~1일",
+         "추세 한 구간의 주요 지지까지", "균형 — 추세 한 구간"),
+        ("스윙", ((swing_c["price"], _basis(swing_c)) if swing_c else (_toward(entry * 8 / 100), None)),
+         pick_stop(3.5), "며칠~몇주",
+         "큰 추세의 일봉/주봉 레벨까지", "저승률·고수익 — 손절·되돌림 견뎌야"),
+    ]
+
     lev = None
     if position and position.get("qty") and position.get("margin") and position.get("margin_mode") != "교차":
         notional = entry * float(position["qty"])
@@ -2737,24 +2755,22 @@ def build_exit_plan(results, position=None):
         if m > 0:
             lev = round(notional / m, 1)
 
-    styles = [
-        ("스캘핑", scalp_t, 1.0, "분~시간", "고승률·저수익 — 빠른 회전 (백테스트상 짧은 목표가 통계 유리)"),
-        ("데이트레이딩", day_t, 1.8, "시간~1일", "균형 — 추세 한 구간을 노림"),
-        ("스윙", swing_t, 3.0, "며칠~몇주", "저승률·고수익 — 큰 추세 한 방, 손절·되돌림을 견뎌야"),
-    ]
     plans = []
-    for name, tgt, atr_mult, dur, note in styles:
+    for name, (tgt, tbasis), (stop, sbasis), dur, why_exit, note in specs:
         if tgt is None:
             continue
-        stop = (entry + atr * atr_mult) if is_short else (entry - atr * atr_mult)
+        # 스윙 목표가 과도하게 멀면 캡(12%)
+        if name == "스윙" and pct(tgt) > 15:
+            tgt, tbasis = _toward(entry * 12 / 100), None
         reward, risk = abs(tgt - entry), abs(stop - entry)
         plans.append({
             "style": name,
-            "target": round(tgt, 1), "stop": round(stop, 1),
+            "target": round(tgt, 1), "target_basis": tbasis,
+            "stop": round(stop, 1), "stop_basis": sbasis,
             "R": round(reward / risk, 2) if risk else None,
             "price_pct": round(pct(tgt), 2),
             "stop_pct": round(abs(stop - entry) / entry * 100, 2) if entry else 0,
-            "duration": dur, "note": note,
+            "duration": dur, "why_exit": why_exit, "note": note,
         })
     return {"direction": direction, "entry": round(entry, 1), "leverage": lev, "plans": plans}
 
@@ -2789,9 +2805,19 @@ def generate_exit_plan_text(results, position=None):
         L.append(f"| **{p['style']}** | {p['target']:,.6g} | {p['stop']:,.6g} | {rtxt} | "
                  f"+{p['price_pct']:.2f}% | {roe} | {p['duration']} |")
 
-    L.append("\n**스타일별 주의:**")
+    # ── 근거 해설 (왜 여기서 익절·손절하는가) ──
+    exit_logic = ("지지에서 매수 반등 수급이 들어와 더 내려가기 어려운 자리"
+                  if d == "숏" else "저항에서 매도 반발이 나와 더 오르기 어려운 자리")
+    stop_logic = ("이 위로 종가 안착 시 하락(숏) 논리가 깨짐"
+                  if d == "숏" else "이 아래로 종가 안착 시 상승(롱) 논리가 깨짐")
+    L.append(f"\n**📍 근거 해설** (익절 = {exit_logic} / 손절 = {stop_logic})")
     for p in ep["plans"]:
-        L.append(f"- **{p['style']}**: {p['note']} · 손절 폭 {p['stop_pct']:.2f}%")
+        tb = f"**{p['target_basis']}** 컨플루언스" if p["target_basis"] else "이 구간 구조 레벨 없음 → ATR 기반 추정(도달 시 재확인)"
+        sb = f"**{p['stop_basis']}** 레벨" if p["stop_basis"] else "구조 레벨 없음 → ATR 기반"
+        L.append(f"- **{p['style']}** ({p['R']}R · 손절폭 {p['stop_pct']:.2f}%) — {p['note']}")
+        L.append(f"  - 익절 {p['target']:,.6g}: {tb} — {p['why_exit']}")
+        L.append(f"  - 손절 {p['stop']:,.6g}: {sb} 돌파 시 무효")
+
     L.append("\n> 💡 ‘20% 수익’이 목표라면: 레버리지를 고려하세요. 예컨대 데이트레이딩 목표(가격 "
              f"{ep['plans'][min(1,len(ep['plans'])-1)]['price_pct']:.1f}%)에 적정 레버리지만 써도 ROE 20%대가 "
              "나옵니다 — 큰 가격 움직임을 무리하게 기다리는 것보다 통계적으로 유리합니다. "
