@@ -1729,12 +1729,13 @@
       const s = currentDetailSession;
       const p = s && s.position;
       if (!p || !p.entry) { showToast('보유 포지션이 없습니다'); return; }
-      let exit = await fetchTicker(s.symbol);
-      if (!exit) {
-        const v = prompt('청산가를 입력하세요 (현재가 자동조회 실패)');
-        exit = parseFloat(v);
-        if (isNaN(exit)) { showToast('청산 취소'); return; }
-      }
+      const cur = await fetchTicker(s.symbol);
+      // 청산가 확인/입력 — 지금 청산이면 현재가 그대로, 과거 청산이면 수정
+      const def = cur ? String(cur) : '';
+      const v = prompt('청산가를 입력하세요 (지금 청산이면 그대로 확인, 과거에 청산했으면 그때 가격으로 수정)', def);
+      if (v === null) { showToast('청산 취소'); return; }
+      const exit = parseFloat(v);
+      if (isNaN(exit) || exit <= 0) { showToast('청산가가 올바르지 않습니다'); return; }
       const pnl = ((p.direction === '롱') ? (exit - p.entry) : (p.entry - exit)) / p.entry * 100;
       const trade = {
         direction: p.direction, entry: p.entry, stop: p.stop || null, target: p.target || null,

@@ -1346,13 +1346,43 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
     with pb2:
         if st.button("✅ 청산 기록", key=f"pos_close_{sess['id']}", use_container_width=True,
                      disabled=not _pos,
-                     help="현재가 기준 실현 PnL을 계산해 이 방의 거래 기록으로 남기고 포지션을 정리합니다. 방은 유지됩니다."):
-            try:
-                exit_p = _cur or _current_price(sess.get("symbol") or "BTCUSDT")
-            except Exception:
-                exit_p = None
-            pnl = None
-            pnl_usdt = None
+                     help="청산가를 선택(현재가 자동입력 또는 직접 수정)해 실현 PnL을 기록합니다. 방은 유지됩니다."):
+            st.session_state[f"pos_closing_{sess['id']}"] = True
+            st.rerun()
+    with pb3:
+        if st.button("✖ 취소 (기록 없음)", key=f"pos_clear_{sess['id']}", use_container_width=True,
+                     disabled=not _pos, help="잘못 입력한 포지션을 기록 없이 제거합니다"):
+            sess.pop("position", None)
+            _safe_save_session(sess)
+            st.session_state[f"pos_edit_{sess['id']}"] = False
+            st.rerun()
+
+    # ── 청산 확정 패널 (청산가 선택: 현재가 자동입력 또는 직접 입력) ──
+    if _pos and st.session_state.get(f"pos_closing_{sess['id']}"):
+        try:
+            _cur_now = _cur or _current_price(sess.get("symbol") or "BTCUSDT")
+        except Exception:
+            _cur_now = 0.0
+        st.markdown("**🔚 청산가 확인** — 지금 청산이면 그대로, 과거에 청산했으면 그때 가격으로 수정하세요")
+        xc1, xc2, xc3 = st.columns([2, 1, 1])
+        with xc1:
+            _exit_in = st.number_input(
+                "청산가", min_value=0.0, format="%.6f",
+                value=float(_cur_now or 0), key=f"pos_exit_{sess['id']}",
+                label_visibility="collapsed",
+            )
+        with xc2:
+            _do_close = st.button("✅ 확정 청산", key=f"pos_close_go_{sess['id']}",
+                                  use_container_width=True, type="primary")
+        with xc3:
+            if st.button("취소", key=f"pos_close_cancel_{sess['id']}", use_container_width=True):
+                st.session_state[f"pos_closing_{sess['id']}"] = False
+                st.rerun()
+        if _exit_in and _cur_now and abs(_exit_in - _cur_now) / _cur_now > 1e-9:
+            st.caption(f"📝 직접 입력한 청산가 {_exit_in:,.6g} 사용 (현재가 {_cur_now:,.6g} 아님)")
+        if _do_close:
+            exit_p = _exit_in or _cur_now or None
+            pnl = pnl_usdt = None
             if exit_p:
                 diff = ((exit_p - _pos["entry"]) if _pos["direction"] == "롱"
                         else (_pos["entry"] - exit_p))
@@ -1379,13 +1409,7 @@ with st.expander("🎯 포지션 기록 / 리스크 계산기"
             sess.pop("position", None)
             _safe_save_session(sess)
             st.session_state[f"pos_edit_{sess['id']}"] = False
-            st.rerun()
-    with pb3:
-        if st.button("✖ 취소 (기록 없음)", key=f"pos_clear_{sess['id']}", use_container_width=True,
-                     disabled=not _pos, help="잘못 입력한 포지션을 기록 없이 제거합니다"):
-            sess.pop("position", None)
-            _safe_save_session(sess)
-            st.session_state[f"pos_edit_{sess['id']}"] = False
+            st.session_state[f"pos_closing_{sess['id']}"] = False
             st.rerun()
 
     # 이 방의 거래 성적 (복기용)
