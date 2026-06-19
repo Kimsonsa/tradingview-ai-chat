@@ -46,6 +46,17 @@ def _init_table():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # 포지션/거래기록 컬럼 (기존 테이블에도 멱등 추가) — PC↔모바일 동기화
+        for coldef in ("position JSONB", "trades JSONB DEFAULT '[]'::jsonb"):
+            try:
+                c.execute(f"ALTER TABLE trade_sessions ADD COLUMN IF NOT EXISTS {coldef}")
+            except Exception:
+                pass
+        # 모바일(anon)이 포지션 입력/청산을 PATCH 하므로 권한 부여
+        try:
+            c.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON trade_sessions TO anon, authenticated")
+        except Exception:
+            pass
         conn.commit()
         return True
     except Exception:
@@ -132,8 +143,8 @@ def save_session(session):
             try:
                 c = conn.cursor()
                 c.execute("""
-                    INSERT INTO trade_sessions (id, symbol, interval, status, created_at, closed_at, messages, summary, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    INSERT INTO trade_sessions (id, symbol, interval, status, created_at, closed_at, messages, summary, position, trades, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                     ON CONFLICT (id) DO UPDATE SET
                         symbol = EXCLUDED.symbol,
                         interval = EXCLUDED.interval,
@@ -141,6 +152,8 @@ def save_session(session):
                         closed_at = EXCLUDED.closed_at,
                         messages = EXCLUDED.messages,
                         summary = EXCLUDED.summary,
+                        position = EXCLUDED.position,
+                        trades = EXCLUDED.trades,
                         updated_at = CURRENT_TIMESTAMP
                 """, (
                     clean["id"],
@@ -151,6 +164,8 @@ def save_session(session):
                     clean.get("closed_at"),
                     json.dumps(clean.get("messages", []), ensure_ascii=False),
                     json.dumps(clean.get("summary"), ensure_ascii=False) if clean.get("summary") else None,
+                    json.dumps(clean.get("position"), ensure_ascii=False) if clean.get("position") else None,
+                    json.dumps(clean.get("trades", []), ensure_ascii=False),
                 ))
                 conn.commit()
             except Exception:
@@ -180,11 +195,13 @@ def load_session(session_id):
                 row = c.fetchone()
                 if row:
                     data = dict(row)
-                    # JSONB → Python
-                    if isinstance(data.get("messages"), str):
-                        data["messages"] = json.loads(data["messages"])
-                    if isinstance(data.get("summary"), str):
-                        data["summary"] = json.loads(data["summary"])
+                    # JSONB → Python (드라이버가 str로 줄 때 대비)
+                    for k in ("messages", "summary", "position", "trades"):
+                        if isinstance(data.get(k), str):
+                            try:
+                                data[k] = json.loads(data[k])
+                            except Exception:
+                                pass
                     # updated_at은 반환에서 제외
                     data.pop("updated_at", None)
                     return data

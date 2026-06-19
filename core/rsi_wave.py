@@ -2680,6 +2680,29 @@ def _format_scenarios_md(es):
     return "\n".join(rows)
 
 
+def format_position_context(position, cur_price=None):
+    """보유 포지션 → AI 컨텍스트 텍스트 (PC·모바일 공용). 없으면 ''."""
+    if not position or not position.get("entry"):
+        return ""
+    d = position.get("direction")
+    entry = float(position["entry"])
+    parts = [f"방향 {d}", f"진입가 {entry:,.6g}"]
+    if position.get("qty"):
+        parts.append(f"수량 {position['qty']:,.6g}")
+    if position.get("stop"):
+        parts.append(f"손절 {position['stop']:,.6g}")
+    if position.get("target"):
+        parts.append(f"목표 {position['target']:,.6g}")
+    if position.get("liq"):
+        parts.append(f"예상 청산가 {position['liq']:,.6g}")
+    if cur_price and entry:
+        pnl = ((cur_price - entry) if d == "롱" else (entry - cur_price)) / entry * 100
+        parts.append(f"현재가 {cur_price:,.6g} (PnL {pnl:+.2f}%)")
+    return ("\n\n📌 사용자 실제 보유 포지션: " + " | ".join(parts) +
+            "\n(이 포지션 기준으로 손절/익절/홀딩 관점을 포함해 답하라. "
+            "단, 데이터가 포지션과 반대 방향이면 동조하지 말고 분명히 경고할 것)")
+
+
 def build_exit_plan(results, position=None):
     """스타일별(스캘핑/데이/스윙) 익절·손절 플랜 산출.
 

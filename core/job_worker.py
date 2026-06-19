@@ -17,7 +17,8 @@ from datetime import datetime, timedelta
 from core.session_manager import _get_conn, save_session, create_session
 from core.rsi_wave import (
     analyze_rsi_wave, generate_summary_text, format_rsi_wave_for_ai,
-    generate_alert_guide, generate_exit_plan_text, RSI_WAVE_SYSTEM_PROMPT,
+    generate_alert_guide, generate_exit_plan_text, format_position_context,
+    RSI_WAVE_SYSTEM_PROMPT,
 )
 from core.rsi_render import generate_wave_svg, generate_price_ladder_svg
 from core.ai_client import analyze_chart, is_claude_model
@@ -205,12 +206,12 @@ def _finish_job(job_id, session_id=None, error=None):
 # 분석 실행 (데스크탑 RSI 파동 핸들러와 동일 로직)
 # ═══════════════════════════════════════════════
 
-def _build_rsi_report(symbol, history=None):
+def _build_rsi_report(symbol, history=None, position=None):
     """RSI 파동 분석 실행 → (본문 텍스트, 차트 HTML) 반환. 신규/이어붙이기 공용.
 
     history: 이 방의 이전 대화 메시지 리스트. 주어지면 AI 코멘터리가 그 맥락을
     인지한 채 분석한다(예: "앞서 숏을 논의 중"). PC RSI 버튼과 동일하게 동작.
-    방향 판정 자체는 RSI_WAVE_SYSTEM_PROMPT가 데이터 기준으로 객관 유지."""
+    position: 사용자 보유 포지션 — 진입 지도/익절 플랜/AI 컨텍스트에 반영(PC와 동일)."""
     results = analyze_rsi_wave(symbol)
 
     try:
@@ -220,16 +221,26 @@ def _build_rsi_report(symbol, history=None):
         pass
 
     svg = generate_wave_svg(results)
-    ladder = generate_price_ladder_svg(results)
+    ladder = generate_price_ladder_svg(results, position=position)
     combined = svg.replace("</body>", ladder + "\n</body>") if ladder else svg
     summary = generate_summary_text(results)
+
+    # 포지션 컨텍스트 (현재가 기준 PnL 포함) — PC와 동일하게 모바일에도 주입
+    pos_ctx = ""
+    if position:
+        try:
+            from core.market_data import fetch_klines
+            cur = fetch_klines(symbol, "1m", 2)[-1]["close"]
+        except Exception:
+            cur = None
+        pos_ctx = format_position_context(position, cur)
 
     cfg = _load_config()
     model, api_key = _resolve_ai(cfg)
     ai_text = ""
     if api_key:
         try:
-            prompt = format_rsi_wave_for_ai(symbol, results)
+            prompt = format_rsi_wave_for_ai(symbol, results) + pos_ctx
             # 대화 맥락이 있으면 이전 메시지 + RSI 데이터 프롬프트로 구성(PC와 동일).
             # 없으면(신규 분석) 백지에서.
             if history:
@@ -245,11 +256,11 @@ def _build_rsi_report(symbol, history=None):
             ai_text = f"⚠️ AI 분석 오류: {e}"
 
     try:
-        exit_plan = generate_exit_plan_text(results)
+        exit_plan = generate_exit_plan_text(results, position=position)
     except Exception:
         exit_plan = ""
     try:
-        alert_guide = generate_alert_guide(symbol, results)
+        alert_guide = generate_alert_guide(symbol, results, position=position)
     except Exception:
         alert_guide = ""
     content = summary + ("\n\n" + ai_text if ai_text else "")
@@ -284,8 +295,9 @@ def run_analysis_append(session_id, symbol):
     sym = (symbol or sess.get("symbol") or "BTCUSDT")
     if not sess.get("symbol"):
         sess["symbol"] = sym
-    # 이 방의 이전 대화를 맥락으로 전달 → RSI 코멘터리가 흐름을 이어받는다
-    content, combined = _build_rsi_report(sym, history=sess.get("messages") or [])
+    # 이 방의 이전 대화 + 보유 포지션을 전달 → PC와 동일하게 포지션 반영
+    content, combined = _build_rsi_report(sym, history=sess.get("messages") or [],
+                                          position=sess.get("position"))
     sess.setdefault("messages", [])
     sess["messages"].append({"role": "user", "content": "🌊 RSI 재분석"})
     sess["messages"].append({"role": "assistant", "content": content, "rsi_wave_html": combined})
@@ -335,6 +347,14 @@ def run_chat(session_id, prompt, symbol):
         market_data += format_machine_context(sym, analyze_rsi_wave(sym))
     except Exception:
         pass
+    # 보유 포지션 컨텍스트 (PC 채팅과 동일)
+    if sess.get("position"):
+        try:
+            from core.market_data import fetch_klines
+            cur = fetch_klines(sym, "1m", 2)[-1]["close"]
+        except Exception:
+            cur = None
+        market_data += format_position_context(sess["position"], cur)
 
     try:
         resp = "".join(analyze_chart(

@@ -835,6 +835,29 @@
       font-size: 11px;
       color: var(--text-muted);
     }
+
+    /* Position card */
+    .pos-card {
+      margin: 10px 16px; padding: 12px 14px;
+      background: var(--bg-secondary); border: 1px solid var(--border, #2a2a3a);
+      border-radius: 14px;
+    }
+    .pos-head { display: flex; justify-content: space-between; align-items: center;
+      font-size: 14px; margin-bottom: 6px; }
+    .pos-rows { font-size: 13px; color: var(--text-secondary, #c0c0d0); line-height: 1.6; }
+    .pos-btns { display: flex; gap: 8px; margin-top: 10px; }
+    .pos-btn { flex: 1; padding: 9px; border-radius: 10px; border: 1px solid var(--border, #3a3a4a);
+      background: var(--bg-primary, #16161e); color: var(--text-primary, #e0e0f0);
+      font-size: 13px; font-weight: 600; cursor: pointer; }
+    .pos-btn.close { background: #EF4444; border-color: #EF4444; color: #fff; }
+    .pos-btn.save { width: 100%; background: #2962FF; border-color: #2962FF; color: #fff; margin-top: 8px; }
+    .pos-form { margin-top: 10px; }
+    .pf-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .pf-row select, .pf-row input {
+      flex: 1; min-width: 0; padding: 9px 10px; border-radius: 10px;
+      border: 1px solid var(--border, #3a3a4a); background: var(--bg-primary, #16161e);
+      color: var(--text-primary, #e0e0f0); font-size: 14px;
+    }
   </style>
 </head>
 <body>
@@ -957,6 +980,7 @@
     let currentSessions = [];
     let currentDetailId = null;
     let currentDetailSymbol = '';
+    let currentDetailSession = null;
 
     function loadConfig() {
       try {
@@ -1595,6 +1619,156 @@
     }
 
     /* ═══════════════════════════════════════════ */
+    /* Position (PC와 동기화 — DB의 position 컬럼)   */
+    /* ═══════════════════════════════════════════ */
+    async function fetchTicker(symbol) {
+      // 현재가 (best-effort). 선물 차단 시 스팟 미러 폴백.
+      const urls = [
+        `https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`,
+        `https://data-api.binance.vision/api/v3/ticker/price?symbol=${symbol}`,
+      ];
+      for (const u of urls) {
+        try {
+          const r = await fetch(u, { cache: 'no-store' });
+          if (r.ok) { const d = await r.json(); if (d.price) return parseFloat(d.price); }
+        } catch (e) { /* 다음 폴백 */ }
+      }
+      return null;
+    }
+
+    function fmtNum(v) {
+      if (v == null || v === '') return '-';
+      const n = parseFloat(v);
+      return n.toLocaleString(undefined, { maximumSignificantDigits: 8 });
+    }
+
+    function renderPositionCard(session) {
+      const p = session.position;
+      if (p && p.entry) {
+        const d = p.direction || '롱';
+        const c = (d === '숏') ? '#EF4444' : '#22C55E';
+        const rows = [
+          `진입가 <b>${fmtNum(p.entry)}</b>`,
+          p.qty ? `수량 ${fmtNum(p.qty)}` : '',
+          p.stop ? `손절 ${fmtNum(p.stop)}` : '',
+          p.target ? `목표 ${fmtNum(p.target)}` : '',
+          p.liq ? `청산가 ${fmtNum(p.liq)}` : '',
+        ].filter(Boolean).join(' · ');
+        return `
+          <div class="pos-card" style="border-color:${c}">
+            <div class="pos-head"><span style="color:${c};font-weight:700">🎯 ${d} 보유</span>
+              <span id="pos-pnl" style="color:var(--text-muted)">PnL 계산 중…</span></div>
+            <div class="pos-rows">${rows}</div>
+            <div class="pos-btns">
+              <button onclick="openPositionForm()" class="pos-btn">✏️ 수정</button>
+              <button onclick="closePositionMobile('${escapeHtml(session.id)}')" class="pos-btn close">✅ 청산</button>
+            </div>
+          </div>`;
+      }
+      // 미보유 → 입력 폼(접힘)
+      return `
+        <div class="pos-card">
+          <div class="pos-head"><span style="font-weight:600">🎯 포지션</span>
+            <button onclick="openPositionForm()" class="pos-btn">+ 진입 입력</button></div>
+          <div id="pos-form" class="pos-form" style="display:none"></div>
+        </div>`;
+    }
+
+    function openPositionForm() {
+      const p = (currentDetailSession && currentDetailSession.position) || {};
+      let host = document.getElementById('pos-form');
+      if (!host) {  // 보유 카드에서 수정 누른 경우 — 카드 아래에 폼 삽입
+        const card = document.querySelector('.pos-card');
+        host = document.createElement('div'); host.id = 'pos-form'; host.className = 'pos-form';
+        card.appendChild(host);
+      }
+      host.style.display = 'block';
+      host.innerHTML = `
+        <div class="pf-row">
+          <select id="pf-dir">
+            <option value="롱" ${p.direction === '롱' ? 'selected' : ''}>롱</option>
+            <option value="숏" ${p.direction === '숏' ? 'selected' : ''}>숏</option>
+          </select>
+          <input id="pf-entry" type="number" inputmode="decimal" placeholder="진입가" value="${p.entry || ''}">
+        </div>
+        <div class="pf-row">
+          <input id="pf-stop" type="number" inputmode="decimal" placeholder="손절가" value="${p.stop || ''}">
+          <input id="pf-target" type="number" inputmode="decimal" placeholder="목표가" value="${p.target || ''}">
+        </div>
+        <div class="pf-row">
+          <input id="pf-qty" type="number" inputmode="decimal" placeholder="수량(코인)" value="${p.qty || ''}">
+          <input id="pf-liq" type="number" inputmode="decimal" placeholder="청산가(거래소값)" value="${p.liq || ''}">
+        </div>
+        <button onclick="savePositionMobile('${escapeHtml(currentDetailId)}')" class="pos-btn save">💾 저장</button>`;
+    }
+
+    async function savePositionMobile(id) {
+      const num = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+      const entry = num(document.getElementById('pf-entry').value);
+      if (!entry) { showToast('진입가를 입력하세요'); return; }
+      const pos = {
+        direction: document.getElementById('pf-dir').value,
+        entry, stop: num(document.getElementById('pf-stop').value),
+        target: num(document.getElementById('pf-target').value),
+        qty: num(document.getElementById('pf-qty').value),
+        liq: num(document.getElementById('pf-liq').value),
+        opened_at: (currentDetailSession && currentDetailSession.position && currentDetailSession.position.opened_at) || new Date().toISOString(),
+      };
+      try {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/trade_sessions?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: { ...apiHeaders(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ position: pos }),
+        });
+        if (!r.ok) { showToast(`저장 실패 (${r.status})`); return; }
+        showToast('💾 포지션 저장됨');
+        loadDetail(id);
+      } catch (e) { showToast('저장 오류: ' + e.message); }
+    }
+
+    async function closePositionMobile(id) {
+      const s = currentDetailSession;
+      const p = s && s.position;
+      if (!p || !p.entry) { showToast('보유 포지션이 없습니다'); return; }
+      let exit = await fetchTicker(s.symbol);
+      if (!exit) {
+        const v = prompt('청산가를 입력하세요 (현재가 자동조회 실패)');
+        exit = parseFloat(v);
+        if (isNaN(exit)) { showToast('청산 취소'); return; }
+      }
+      const pnl = ((p.direction === '롱') ? (exit - p.entry) : (p.entry - exit)) / p.entry * 100;
+      const trade = {
+        direction: p.direction, entry: p.entry, stop: p.stop || null, target: p.target || null,
+        qty: p.qty || null, exit, pnl_pct: Math.round(pnl * 1000) / 1000,
+        opened_at: p.opened_at || null, closed_at: new Date().toISOString(),
+      };
+      const trades = (s.trades || []).concat([trade]);
+      const icon = pnl >= 0 ? '🟢' : '🔴';
+      const msg = { role: 'user', trade_event: true,
+        content: `🧾 ${icon} 포지션 청산 — ${p.direction} ${fmtNum(p.entry)} → ${fmtNum(exit)} (${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%)` };
+      const messages = (s.messages || []).concat([msg]);
+      try {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/trade_sessions?id=eq.${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: { ...apiHeaders(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ position: null, trades, messages }),
+        });
+        if (!r.ok) { showToast(`청산 실패 (${r.status})`); return; }
+        showToast(`${icon} 청산 ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`);
+        loadDetail(id);
+      } catch (e) { showToast('청산 오류: ' + e.message); }
+    }
+
+    async function updatePositionPnl() {
+      const el = document.getElementById('pos-pnl');
+      const p = currentDetailSession && currentDetailSession.position;
+      if (!el || !p || !p.entry) return;
+      const cur = await fetchTicker(currentDetailSession.symbol);
+      if (!cur) { el.textContent = '현재가 조회 실패'; return; }
+      const pnl = ((p.direction === '롱') ? (cur - p.entry) : (p.entry - cur)) / p.entry * 100;
+      el.style.color = pnl >= 0 ? '#22C55E' : '#EF4444';
+      el.textContent = `현재 ${fmtNum(cur)} · PnL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`;
+    }
+
+    /* ═══════════════════════════════════════════ */
     /* Session Detail                             */
     /* ═══════════════════════════════════════════ */
     async function loadDetail(id, scrollToBottom = false) {
@@ -1608,6 +1782,7 @@
       try {
         const session = await fetchSessionDetail(id);
         currentDetailSymbol = session.symbol || '';
+        currentDetailSession = session;
         const sym = session.symbol || '?';
         const intv = session.interval || '';
         titleEl.textContent = `${sym} ${intv}`;
@@ -1620,6 +1795,9 @@
         } else if (session.status === 'active') {
           html += `<div style="padding:12px 16px"><span class="status-badge active">● 진행 중</span></div>`;
         }
+
+        // 포지션 카드 (PC와 동기화 — 보유 시 PnL·청산, 미보유 시 입력 폼)
+        html += renderPositionCard(session);
 
         // Messages
         const messages = session.messages || [];
@@ -1638,6 +1816,7 @@
         }
 
         content.innerHTML = html;
+        updatePositionPnl();  // 보유 포지션 실시간 PnL
 
         // Render RSI wave iframes — 지연 로딩(스크롤 시 생성)으로 다수 리포트에서도 멈추지 않게
         try {

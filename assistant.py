@@ -587,36 +587,24 @@ def _position_pnl(p, cur):
 
 
 def _position_context(sess):
-    """AI 컨텍스트에 주입할 사용자 보유 포지션 블록 (없으면 '')"""
+    """AI 컨텍스트에 주입할 사용자 보유 포지션 블록 (없으면 '') — 공용 함수 위임"""
+    from core.rsi_wave import format_position_context
     p = sess.get("position")
     if not p:
         return ""
+    # 청산가: 실측 입력 우선, 없으면 추정해 채워 넣음
+    if not p.get("liq"):
+        _eff_m = (st.session_state.account_size
+                  if p.get("margin_mode") == "교차" and st.session_state.account_size > 0
+                  else p.get("margin"))
+        _liq = _liq_price(p.get("direction"), p.get("entry"), p.get("qty"), _eff_m)
+        if _liq:
+            p = {**p, "liq": _liq}
     try:
         cur = _current_price(sess.get("symbol") or "BTCUSDT")
     except Exception:
         cur = None
-    pnl, _, _ = _position_pnl(p, cur)
-    parts = [f"방향 {p.get('direction')}", f"진입가 {p.get('entry')}"]
-    if p.get("qty"):
-        parts.append(f"수량 {p['qty']:,.6g}개")
-    if p.get("stop"):
-        parts.append(f"손절 {p['stop']}")
-    if p.get("target"):
-        parts.append(f"목표 {p['target']}")
-    _eff_m = (st.session_state.account_size
-              if p.get("margin_mode") == "교차" and st.session_state.account_size > 0
-              else p.get("margin"))
-    _liq = p.get("liq") or _liq_price(p.get("direction"), p.get("entry"), p.get("qty"), _eff_m)
-    if _liq:
-        _src = "거래소 실측" if p.get("liq") else "추정"
-        parts.append(f"청산가 {_liq:,.6g} ({p.get('margin_mode', '격리')}·{_src})")
-    if cur is not None and pnl is not None:
-        parts.append(f"현재가 {cur} (PnL {pnl:+.2f}%)")
-    return (
-        "\n\n📌 사용자 실제 보유 포지션: " + " | ".join(parts) +
-        "\n(이 포지션 기준으로 손절/익절/홀딩 관점을 포함해 답하라. "
-        "단, 데이터가 포지션과 반대 방향이면 동조하지 말고 분명히 경고할 것)"
-    )
+    return format_position_context(p, cur)
 
 
 # ═══════════════════════════════════════════════
