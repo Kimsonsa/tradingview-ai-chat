@@ -2680,6 +2680,31 @@ def _format_scenarios_md(es):
     return "\n".join(rows)
 
 
+def detect_exhaustion_reversal(results):
+    """추세 소진 → 반전 신호 (백테스트 검증·일관성 통과, 추세추종과 별개 차원).
+
+    검증(6심볼 4000봉, 심볼별 일관성 5/6):
+    - 15분 RSI<28(저점 소진) → 롱 반전: 풀링 승률 62.7% (베이스 ~44%)
+    - 1시간 RSI>72(고점 소진) → 숏 반전: 풀링 승률 59.2% (베이스 ~54%)
+    반대 케이스(15분 과매수·1시간 과매도)는 노이즈라 제외.
+    → 시스템이 추세 지속을 외치는 소진 지점에서 역방향 확률 우위. 방향 틸트일 뿐 확정 아님.
+
+    Returns: [{tf, dir, kind, win_rate, why}, ...]
+    """
+    out = []
+    r15 = results.get("15분") or {}
+    if not r15.get("error") and (r15.get("rsi") or 50) < 28:
+        out.append({"tf": "15분", "dir": "롱", "kind": "저점 소진(과매도)",
+                    "win_rate": 62.7, "rsi": r15.get("rsi"),
+                    "why": "RSI<28 과매도 극단 — 단기 V반등이 통계적으로 빈번(5/6심볼 일관)"})
+    r1h = results.get("1시간") or {}
+    if not r1h.get("error") and (r1h.get("rsi") or 50) > 72:
+        out.append({"tf": "1시간", "dir": "숏", "kind": "고점 소진(과매수)",
+                    "win_rate": 59.2, "rsi": r1h.get("rsi"),
+                    "why": "RSI>72 과매수 — 고점 분산 후 하락 반전이 통계적으로 우위(5/6심볼 일관)"})
+    return out
+
+
 def format_position_context(position, cur_price=None):
     """보유 포지션 → AI 컨텍스트 텍스트 (PC·모바일 공용). 없으면 ''."""
     if not position or not position.get("entry"):
@@ -2973,6 +2998,18 @@ def generate_summary_text(results):
             lines.append(_format_scenarios_md(es))
             lines.append("")
 
+    # ── 🔄 추세 소진 / 반전 경고 (검증된 역추세 신호 — 추세추종과 별개) ──
+    revs = detect_exhaustion_reversal(results)
+    if revs:
+        lines.append("**🔄 추세 소진 / 반전 신호** (백테스트 검증·추세추종 판정과 별개)")
+        for rv in revs:
+            opp = ea and ea.get("direction") and ea["direction"] != rv["dir"]
+            tag = " — ⚠️ 위 추세 판정과 반대! 추세 추격 자제, 역방향 주목" if opp else ""
+            lines.append(f"> {rv['tf']} {rv['kind']}(RSI {rv['rsi']:.0f}) → **{rv['dir']} 반전 우위** "
+                         f"(검증 승률 {rv['win_rate']}%, 5/6심볼 일관){tag}")
+            lines.append(f">   {rv['why']}")
+        lines.append("")
+
     # ── 관점별 포지션 (한 줄씩) ──
     groups = {
         "스캘핑": ["1분", "5분"],
@@ -3172,6 +3209,19 @@ def generate_summary_text(results):
     vr1h = (results.get("1시간") or {}).get("vol_regime")
     low_vol = vr1h and vr1h.get("label") == "저변동"
 
+    # 추세 소진 반전 신호가 추세 방향과 반대면 → 추세 추격 자제 우선 (검증된 역추세)
+    revs = detect_exhaustion_reversal(results)
+    opp_rev = next((rv for rv in revs if direction in ("롱", "숏") and rv["dir"] != direction), None)
+    if opp_rev:
+        verdict = "🔄 추세 소진 — 추세 추격 보류, 반전 주목"
+        why = (f"추세 판정은 {direction}이나 {opp_rev['tf']} {opp_rev['kind']}(RSI {opp_rev['rsi']:.0f}) → "
+               f"**{opp_rev['dir']} 반전 우위**(검증 {opp_rev['win_rate']}%, 5/6심볼). "
+               f"{direction} 추격은 통계적으로 불리한 자리 — 반전 신호 쪽({opp_rev['dir']})을 짧은 목표로 주목하거나 관망.")
+        lines.append(f"- **판정: {verdict}** — {why}")
+        lines.append("  ※ 추세 지표(EMA/ADX)는 후행이라 소진 지점에서 거꾸로 가리킨다. "
+                     "이 반전 신호는 추세추종과 별개로 검증된 역추세 틸트(확정 아님).")
+        return "\n".join(lines)
+
     if direction in ("롱", "숏") and chase_ok and best_r >= 1.2 and not low_vol:
         verdict = "🟡 진입 가능 (제한 사이즈)"
         why = (f"{direction} 방향 + 추격 손익비 {best_r}R 확보 — 짧은 목표(0.5~0.8R) 지정가, "
@@ -3238,6 +3288,12 @@ def format_machine_context(symbol, results):
         below = ", ".join(f"{c['price']:,.1f}({'+'.join(c['labels'][:2])})" for c in lm["below"][:3])
         lines.append(f"- 핵심 레벨 — 위(저항): {above or '없음'} / 아래(지지·목표): {below or '없음'}")
 
+    # 추세 소진/반전 신호 (검증된 역추세 — 추세추종과 별개)
+    for rv in detect_exhaustion_reversal(results):
+        lines.append(f"- 🔄 추세 소진/반전(검증): {rv['tf']} {rv['kind']}(RSI {rv['rsi']:.0f}) → "
+                     f"{rv['dir']} 반전 우위 {rv['win_rate']}%(5/6심볼). "
+                     "추세 지표는 후행이라 여기서 추세 지속을 외치니, 이 반전 방향을 우선 고려(확인 후 짧은 목표).")
+
     # 변동성 환경 (1시간 — 검증된 약한 메타규칙)
     vr = (results.get("1시간") or {}).get("vol_regime")
     if vr:
@@ -3285,6 +3341,17 @@ def format_rsi_wave_for_ai(symbol, results):
             f = r["funding_analysis"]
             lines.append(f"💸 펀딩/프리미엄(심볼 공통): {f['label']} — {f['detail']}\n")
             break
+
+    # ── 추세 소진 / 반전 신호 (검증된 역추세 — 추세추종과 별개) ──
+    revs = detect_exhaustion_reversal(results)
+    if revs:
+        lines.append("🔄 추세 소진/반전 신호 (백테스트 검증·일관성 통과 — 추세추종 판정과 별개 차원):")
+        for rv in revs:
+            lines.append(f"   - {rv['tf']} {rv['kind']}(RSI {rv['rsi']:.0f}) → {rv['dir']} 반전 우위 "
+                         f"(검증 승률 {rv['win_rate']}%, 5/6심볼 일관). {rv['why']}")
+        lines.append("   → 중요: 추세 지표(EMA/ADX)는 후행이라 소진 지점에서 추세 지속을 외치지만, "
+                     "위 반전 신호가 뜨면 그 방향(반전)을 추세 판정보다 우선 고려하라. 단 확정이 아닌 확률 우위이니 "
+                     "반등/거부 캔들·거래량으로 확인 후 짧은 목표로 접근. 추세 추격은 자제하라.\n")
 
     # ── 변동성 환경 (1시간 — 검증된 약한 메타규칙) ──
     vr = (results.get("1시간") or {}).get("vol_regime")
